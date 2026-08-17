@@ -1,0 +1,1288 @@
+// admin-script.js - Admin Panel (All Fixes Applied v2.0)
+import { auth, db as mainDb } from "./firebase-config.js";
+import { initializeApp, getApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js";
+import { getDatabase, ref, set, onValue, serverTimestamp, remove, update, push, get, child, increment, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-database.js";
+
+let db = mainDb;
+let globalKeysData = [];
+let globalSecondaryFirebases = [];
+let keysChartInstance = null;
+let globalCustomKeyPaths = [];
+
+// ===== CUSTOM SELECT HANDLER =====
+window._selectCS = function(el) {
+    const container = el.closest('.custom-select');
+    const hiddenInput = container.querySelector('input[type="hidden"]');
+    const selectedSpan = container.querySelector('.cs-selected');
+    
+    container.querySelectorAll('.cs-option').forEach(o => o.classList.remove('active'));
+    el.classList.add('active');
+    selectedSpan.textContent = el.textContent;
+    hiddenInput.value = el.dataset.value;
+    container.classList.remove('open');
+    
+    const eventId = container.dataset.id;
+    if (eventId === 'auditTypeFilter') window.filterAuditLogs();
+};
+
+document.addEventListener('click', (e) => {
+    document.querySelectorAll('.custom-select.open').forEach(cs => {
+        if (!cs.contains(e.target)) cs.classList.remove('open');
+    });
+});
+
+function syncCustomSelect(id) {
+    const input = document.getElementById(id);
+    if (!input) return;
+    const container = input.closest('.custom-select');
+    if (!container) return;
+    const val = input.value;
+    const opts = container.querySelectorAll('.cs-option');
+    opts.forEach(o => {
+        o.classList.toggle('active', o.dataset.value === val);
+        if (o.dataset.value === val) container.querySelector('.cs-selected').textContent = o.textContent;
+    });
+}
+let cleanupInterval = null;
+let saveTimeout = null;
+let allDbKeys = {}; 
+let activeMirrorListeners = {}; 
+
+// ===== HELPER: Remove key from ALL paths (ActiveUserKeys + custom) =====
+function removeAllKeyPaths(key) {
+    const allDbs = [db, ...globalSecondaryFirebases.map(f => f.db)];
+    allDbs.forEach(targetDb => {
+        remove(ref(targetDb, 'ActiveUserKeys/' + key)).catch(()=>{});
+    });
+    for (const customPath of globalCustomKeyPaths) {
+        allDbs.forEach(targetDb => {
+            remove(ref(targetDb, customPath + '/' + key)).catch(()=>{});
+        });
+    }
+}
+
+function setAllKeyPaths(key, data) {
+    const allDbs = [db, ...globalSecondaryFirebases.map(f => f.db)];
+    allDbs.forEach(targetDb => {
+        set(ref(targetDb, 'ActiveUserKeys/' + key), data).catch(()=>{});
+    });
+    for (const customPath of globalCustomKeyPaths) {
+        allDbs.forEach(targetDb => {
+            set(ref(targetDb, customPath + '/' + key), data).catch(()=>{});
+        });
+    }
+}
+
+function updateAllKeyPaths(key, updates) {
+    const allDbs = [db, ...globalSecondaryFirebases.map(f => f.db)];
+    allDbs.forEach(targetDb => {
+        update(ref(targetDb, 'ActiveUserKeys/' + key), updates).catch(()=>{});
+    });
+    for (const customPath of globalCustomKeyPaths) {
+        allDbs.forEach(targetDb => {
+            update(ref(targetDb, customPath + '/' + key), updates).catch(()=>{});
+        });
+    }
+}
+
+// ===== PAGINATION =====
+let currentPage = 1;
+const PAGE_SIZE = 50;
+let filteredKeysData = [];
+let currentFilter = 'all';
+
+// ===== AUDIT LOG CACHE =====
+window.adminLogsCache = {}; 
+let allAuditLogs = [];
+
+// ===== NOTIFICATIONS =====
+let notifCount = 0;
+let notifHistory = [];
+
+// ===== DEBOUNCE =====
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func(...args), wait);
+    };
+}
+
+// ===== TOAST =====
+window.showToast = function(msg, isError = false) {
+    const toast = document.getElementById('toastNotice');
+    if (!toast) return;
+    toast.innerText = msg;
+    toast.className = '';
+    if (isError) toast.classList.add('error');
+    toast.classList.add('show');
+    setTimeout(() => { toast.classList.remove('show'); }, 4000);
+};
+
+// ===== LOGOUT =====
+window.logoutAdmin = function() {
+    if (confirm('Are you sure you want to logout?')) {
+        signOut(auth).then(() => {
+            sessionStorage.removeItem('admin_session');
+            window.location.href = 'index.html';
+        }).catch(() => { window.location.href = 'index.html'; });
+    }
+};
+
+// ===== DATE FORMATTER =====
+function formatDate(ts) {
+    if (!ts || typeof ts === 'object') return "Just Now"; 
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "Just Now";
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+// ===== NOTIFICATIONS (persisted to Firebase) =====
+const NOTIF_EMPTY_HTML = '<div class="notification-item" style="text-align:center;color:#52525b;">No notifications yet</div>';
+let lastReadTime = 0;
+
+function renderNotifUI() {
+    const badge = document.getElementById('notifBadge');
+    const dropdown = document.getElementById('notifDropdown');
+    const unread = notifHistory.filter(n => (n.time || 0) > lastReadTime);
+    if (badge) {
+        if (unread.length > 0) {
+            badge.style.display = 'flex';
+            badge.textContent = unread.length > 99 ? '99+' : unread.length;
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+    if (dropdown) {
+        if (notifHistory.length === 0) {
+            dropdown.innerHTML = NOTIF_EMPTY_HTML;
+        } else {
+            dropdown.innerHTML = notifHistory.map(n => {
+                const isUnread = (n.time || 0) > lastReadTime;
+                return `<div class="notification-item" style="${isUnread ? 'border-left:3px solid #6366f1;padding-left:12px;' : ''}">${n.text}<div class="notif-time">${formatDate(n.time)}</div></div>`;
+            }).join('') + '<div class="notification-item notif-clear-btn" style="text-align:center;color:#6366f1;cursor:pointer;font-weight:600;" onclick="window.clearNotifications()">Clear All</div>';
+        }
+    }
+}
+
+async function addNotification(text) {
+    if (!db) return;
+    try {
+        await push(ref(db, 'AdminNotifications'), { text, time: serverTimestamp() });
+    } catch (e) { console.error("notif save error:", e); }
+}
+
+window.markNotifsRead = async function() {
+    if (!db) return;
+    lastReadTime = Date.now();
+    renderNotifUI();
+    try { await set(ref(db, 'SystemSettings/lastNotifReadTime'), lastReadTime); } catch(e) {}
+};
+
+async function loadNotifications() {
+    if (!db) return;
+    try {
+        const snap = await get(ref(db, 'SystemSettings/lastNotifReadTime'));
+        if (snap.exists()) lastReadTime = snap.val() || 0;
+    } catch(e) {}
+    onValue(ref(db, 'AdminNotifications'), (snap) => {
+        notifHistory = [];
+        if (snap.exists()) {
+            const entries = [];
+            snap.forEach(c => { entries.push({ id: c.key, ...c.val() }); });
+            entries.reverse();
+            notifHistory = entries.slice(0, 20);
+        }
+        renderNotifUI();
+    });
+}
+
+window.clearNotifications = async function() {
+    if (!db) return;
+    try {
+        await remove(ref(db, 'AdminNotifications'));
+        notifHistory = [];
+        lastReadTime = 0;
+        renderNotifUI();
+        showToast("Notifications cleared!");
+    } catch (e) { showToast(e.message, true); }
+};
+
+// ===== ACTIVITY LOG =====
+async function logAdminActivity(action, key, undoDataObj, type) {
+    if (!db) { console.error("Log skipped: db is null"); return; }
+    try {
+        const logData = {
+            action: String(action || ''),
+            key: String(key || ''),
+            type: String(type || ''),
+            undoData: JSON.stringify(undoDataObj || {}),
+            time: serverTimestamp(),
+            undone: false
+        };
+        await push(ref(db, 'AdminLogs'), logData);
+
+        // Keep only latest 10 logs — delete older ones from Firebase
+        const snap = await get(ref(db, 'AdminLogs'));
+        if (snap.exists()) {
+            const entries = [];
+            snap.forEach(c => entries.push({ key: c.key, time: c.val().time || 0 }));
+            entries.sort((a, b) => a.time - b.time);
+            if (entries.length > 10) {
+                const toDelete = entries.slice(0, entries.length - 10);
+                for (const entry of toDelete) {
+                    await remove(ref(db, 'AdminLogs/' + entry.key)).catch(() => {});
+                }
+            }
+        }
+    } catch (e) {
+        console.error("LOG ERROR:", e);
+        showToast("Log failed: " + e.message, true);
+    }
+}
+
+// ===== UNDO ENGINE =====
+window.executeUndo = async function(logId) {
+    if (!db) { showToast("DB not ready", true); return; }
+    if (!confirm("Undo this action globally (on all DBs)?")) return;
+    
+    const logItem = window.adminLogsCache[logId];
+    if (!logItem) { showToast("Log data missing!", true); return; }
+
+    try {
+        const type = logItem.type;
+        const undoDataStr = logItem.undoData;
+        const undoData = typeof undoDataStr === 'string' ? JSON.parse(undoDataStr) : undoDataStr;
+        
+        if (type === 'DELETE_KEY') {
+            setAllKeyPaths(undoData.key, undoData.data);
+            showToast("Key Restored Globally!");
+        } else if (type === 'CREATE_KEY') {
+            removeAllKeyPaths(undoData.key);
+            showToast("Key Generation Undone!");
+        } else if (type === 'EDIT_KEY') {
+            const updates = { durationHours: undoData.oldHours };
+            updateAllKeyPaths(undoData.key, updates);
+            showToast("Key Time Reverted Globally!");
+        } else if (type === 'RESET_KEY') {
+            const updates = { boundDeviceId: undoData.oldDevice, isUsed: true };
+            updateAllKeyPaths(undoData.key, updates);
+            showToast("Device Re-bound Globally!");
+        } else if (type === 'BAN_DEVICE') {
+            await remove(ref(db, 'BannedDevices/' + undoData.deviceId));
+            if (undoData.keyData) {
+                setAllKeyPaths(undoData.key, undoData.keyData);
+            }
+            showToast("Device Unbanned & Key Restored!");
+        } else if (type === 'SETTINGS') {
+            if(undoData.oldSettings) {
+                await update(ref(db, 'SystemSettings'), undoData.oldSettings);
+                showToast("Settings Reverted to previous state!");
+            }
+        }
+        
+        await update(ref(db, 'AdminLogs/' + logId), { undone: true });
+        await logAdminActivity("Used Undo Action", `Reverted ${type}`, {}, "UNDO");
+    } catch (e) { 
+        showToast("Error: " + e.message, true); 
+    }
+};
+
+window.clearActivityLog = async function() {
+    if (!db) return;
+    if (confirm("Clear all history?")) {
+        try { await remove(ref(db, 'AdminLogs')); showToast("History Cleared!"); } 
+        catch (e) { showToast(e.message, true); }
+    }
+};
+
+// ===== AUDIT LOG FILTERING =====
+window.filterAuditLogs = function() {
+    renderAuditLogs(allAuditLogs);
+};
+
+function renderAuditLogs(logs) {
+    const box = document.getElementById('activityLogBody');
+    if (!box) { console.error("activityLogBody NOT FOUND"); return; }
+    
+    let filtered = [...logs];
+    const typeFilter = document.getElementById('auditTypeFilter')?.value;
+    
+    if (typeFilter && typeFilter !== 'all') {
+        filtered = filtered.filter(l => l.data?.type === typeFilter);
+    }
+    
+    // Date filter only if user explicitly set dates
+    const dateFrom = document.getElementById('auditDateFrom')?.value;
+    const dateTo = document.getElementById('auditDateTo')?.value;
+    if (dateFrom) {
+        const from = new Date(dateFrom).getTime();
+        filtered = filtered.filter(l => {
+            const t = typeof l.data?.time === 'number' ? l.data.time : 0;
+            return t >= from;
+        });
+    }
+    if (dateTo) {
+        const to = new Date(dateTo).setHours(23,59,59,999);
+        filtered = filtered.filter(l => {
+            const t = typeof l.data?.time === 'number' ? l.data.time : 0;
+            return t <= to;
+        });
+    }
+    
+    let htmlStr = '';
+    const displayLogs = filtered.slice().reverse().slice(0, 10);
+    displayLogs.forEach(item => {
+        const log = item.data;
+        if (!log) return;
+        window.adminLogsCache[item.id] = log;
+        const undoBtn = log.undone ? 
+            `<span style="color:#a1a1aa;font-style:italic;">(Undone)</span>` :
+            `<button class="action-icon" style="padding:4px 8px;font-size:11px;" onclick="window.executeUndo('${item.id}')"><i class="fa-solid fa-rotate-left"></i> Undo</button>`;
+        htmlStr += `<tr>
+            <td>${log.action || 'System'}</td>
+            <td style="font-family:monospace;color:#6366f1;">${log.key || '-'}</td>
+            <td style="font-size:12px;color:#71717a;">${formatDate(log.time)}</td>
+            <td>${undoBtn}</td>
+        </tr>`;
+    });
+    
+    box.innerHTML = htmlStr || '<tr><td colspan="4" style="text-align:center;padding:20px;">No activity yet. Make a change to see logs here.</td></tr>';
+}
+
+function getLogActionColor(action) {
+    if (!action) return '#a1a1aa';
+    if (action.includes('CREATE') || action.includes('Created')) return '#34d399';
+    if (action.includes('DELETE') || action.includes('Deleted')) return '#ef4444';
+    if (action.includes('EDIT') || action.includes('Edited')) return '#60a5fa';
+    if (action.includes('RESET') || action.includes('Unbound')) return '#facc15';
+    if (action.includes('BAN') || action.includes('Banned')) return '#f472b6';
+    if (action.includes('SETTING') || action.includes('Settings')) return '#818cf8';
+    if (action.includes('LOGIN') || action.includes('Login')) return '#34d399';
+    return '#a1a1aa';
+}
+
+// ===== CHART =====
+function renderGraph(dailyData) {
+    const canvas = document.getElementById('keysChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const labels = [], counts = [];
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        labels.push(`${d.getDate()}/${d.getMonth()+1}`);
+        counts.push(dailyData[ds] || 0);
+    }
+    if (keysChartInstance) keysChartInstance.destroy();
+    keysChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels, datasets: [{
+                label: 'Keys Generated', data: counts,
+                borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.2)',
+                borderWidth: 2, fill: true, tension: 0.4, pointRadius: 2
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#a1a1aa' }, grid: { display: false } },
+                y: { ticks: { color: '#a1a1aa', stepSize: 1 }, grid: { color: '#27272a' }, beginAtZero: true }
+            }
+        }
+    });
+}
+
+// ===== SAVE DEFAULTS (Manual) =====
+async function saveDefaultSettings() {
+    if (!db) return;
+    const val = parseInt(document.getElementById('customTimeVal').value);
+    const type = document.getElementById('customTimeType').value;
+    const tier = document.getElementById('keyTypeInput').value;
+    const lifetime = document.getElementById('lifetimeCheck').checked;
+    if (!val || val <= 0) return showToast("Invalid time value", true);
+    const hours = type === 'days' ? val * 24 : val;
+    const duration = lifetime ? 99999 : hours;
+    try {
+        const snap = await get(ref(db, 'SystemSettings'));
+        const oldDB = snap.exists() ? snap.val() : {};
+        const oldSet = {
+            defaultKeyDuration: oldDB.defaultKeyDuration ?? 24,
+            defaultKeyTier: oldDB.defaultKeyTier ?? 'normal',
+            defaultKeyLifetime: oldDB.defaultKeyLifetime ?? false
+        };
+        await update(ref(db, 'SystemSettings'), { defaultKeyDuration: duration, defaultKeyTier: tier, defaultKeyLifetime: lifetime });
+        await logAdminActivity("Saved Default Settings", `Tier: ${tier}, Duration: ${duration}h`, { oldSettings: oldSet }, "SETTINGS");
+        document.getElementById('saveDefaultDurationBtn').innerHTML = '<i class="fa-solid fa-check"></i> Saved!';
+        showToast("Default settings saved!");
+        setTimeout(() => { document.getElementById('saveDefaultDurationBtn').innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save as Default'; }, 1500);
+    } catch (e) { showToast(e.message, true); }
+}
+
+document.getElementById('saveDefaultDurationBtn')?.addEventListener('click', saveDefaultSettings);
+
+// ===== KEY MANAGER (with Pagination + Bulk Selection) =====
+let selectedKeys = new Set();
+
+window.toggleSelectAll = function() {
+    const checked = document.getElementById('selectAll').checked;
+    const startIdx = (currentPage - 1) * PAGE_SIZE;
+    const pageItems = filteredKeysData.slice(startIdx, startIdx + PAGE_SIZE);
+    pageItems.forEach(item => {
+        if (checked) selectedKeys.add(item.k);
+        else selectedKeys.delete(item.k);
+    });
+    updateBulkUI();
+    renderUnifiedKeys();
+};
+
+window.clearSelection = function() {
+    selectedKeys.clear();
+    document.getElementById('selectAll').checked = false;
+    updateBulkUI();
+    renderUnifiedKeys();
+};
+
+function updateBulkUI() {
+    const bulkEl = document.getElementById('bulkActions');
+    const countEl = document.getElementById('bulkCount');
+    if (selectedKeys.size > 0) {
+        bulkEl.classList.add('show');
+        countEl.textContent = `${selectedKeys.size} selected`;
+    } else {
+        bulkEl.classList.remove('show');
+    }
+}
+
+window.bulkDelete = async function() {
+    if (selectedKeys.size === 0) return;
+    if (!confirm(`Delete ${selectedKeys.size} keys from ALL databases?`)) return;
+    for (const key of selectedKeys) {
+        const item = globalKeysData.find(d => d.k === key);
+        if (item) await logAdminActivity("Deleted Key", key, { key, data: item.d }, "DELETE_KEY");
+        removeAllKeyPaths(key);
+    }
+    showToast(`${selectedKeys.size} keys deleted globally!`);
+    addNotification(`${selectedKeys.size} keys bulk deleted`);
+    selectedKeys.clear();
+    updateBulkUI();
+};
+
+window.bulkUnbind = async function() {
+    if (selectedKeys.size === 0) return;
+    if (!confirm(`Unbind ${selectedKeys.size} keys from devices?`)) return;
+    for (const key of selectedKeys) {
+        const item = globalKeysData.find(d => d.k === key);
+        const updates = { boundDeviceId: "NONE", isUsed: false };
+        updateAllKeyPaths(key, updates);
+        if (item) await logAdminActivity("Unbound Device", key, { key, oldDevice: item.d.boundDeviceId }, "RESET_KEY");
+    }
+    showToast(`${selectedKeys.size} keys unbound!`);
+    addNotification(`${selectedKeys.size} keys bulk unbound from devices`);
+    selectedKeys.clear();
+    updateBulkUI();
+};
+
+const debouncedRenderKeys = debounce(() => renderUnifiedKeys(), 300);
+
+function renderUnifiedKeys() {
+    const tbody = document.getElementById('tableBody');
+    const usersBody = document.getElementById('usersBody');
+    let total = 0, used = 0;
+    
+    let mergedKeys = {};
+    for (let source in allDbKeys) {
+        for (let k in allDbKeys[source]) {
+            if (!mergedKeys[k]) mergedKeys[k] = { ...allDbKeys[source][k] };
+            else if (allDbKeys[source][k].boundDeviceId && allDbKeys[source][k].boundDeviceId !== "NONE") {
+                mergedKeys[k].boundDeviceId = allDbKeys[source][k].boundDeviceId;
+                mergedKeys[k].isUsed = allDbKeys[source][k].isUsed;
+            }
+        }
+    }
+
+    globalKeysData = [];
+    for (let k in mergedKeys) globalKeysData.push({ k, d: mergedKeys[k] });
+    globalKeysData.sort((a, b) => (b.d.createdAt || 0) - (a.d.createdAt || 0));
+
+    // Apply search + type filter
+    const searchTerm = (document.getElementById('searchInput')?.value || '').toLowerCase();
+    const now = Date.now();
+    filteredKeysData = globalKeysData.filter(item => {
+        if (searchTerm && !item.k.toLowerCase().includes(searchTerm) && !(item.d.note || '').toLowerCase().includes(searchTerm)) return false;
+        if (currentFilter !== 'all') {
+            const cr = item.d.createdAt || now;
+            const ex = cr + (item.d.durationHours * 60 * 60 * 1000);
+            const isEx = item.d.durationHours !== 99999 && now > ex;
+            const isBd = item.d.boundDeviceId && item.d.boundDeviceId !== "NONE";
+            if (currentFilter === 'vip' && !item.k.includes('VIP')) return false;
+            if (currentFilter === 'normal' && item.k.includes('VIP')) return false;
+            if (currentFilter === 'active' && !isBd) return false;
+            if (currentFilter === 'expired' && !isEx) return false;
+        }
+        return true;
+    });
+
+    if (filteredKeysData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:30px;">Empty Database</td></tr>';
+        usersBody.innerHTML = '<tr><td colspan="3" style="text-align:center;">No active connections</td></tr>';
+        document.getElementById('totalKeys').innerText = globalKeysData.length;
+        document.getElementById('usedKeys').innerText = 0;
+        document.getElementById('pagination').innerHTML = '';
+        return;
+    }
+
+    const totalPages = Math.ceil(filteredKeysData.length / PAGE_SIZE);
+    if (currentPage > totalPages) currentPage = totalPages;
+    const startIdx = (currentPage - 1) * PAGE_SIZE;
+    const pageItems = filteredKeysData.slice(startIdx, startIdx + PAGE_SIZE);
+
+    let tHTML = '', uHTML = '';
+    pageItems.forEach(item => {
+        total++;
+        const now = Date.now();
+        const cr = item.d.createdAt || now;
+        const ex = cr + (item.d.durationHours * 60 * 60 * 1000);
+        const isEx = item.d.durationHours !== 99999 && now > ex;
+        const isBd = item.d.boundDeviceId && item.d.boundDeviceId !== "NONE";
+        if (isBd) used++;
+        const isChecked = selectedKeys.has(item.k) ? 'checked' : '';
+
+        const badge = item.k.includes('VIP') ? `<span class="badge badge-vip">VIP</span>` : `<span class="badge badge-normal">NORM</span>`;
+        const note = item.d.note ? `<div style="color:#a1a1aa;font-size:11px;margin-top:5px;"><i class="fa-solid fa-tag"></i> ${item.d.note}</div>` : '';
+
+        let countdownHTML = '';
+        if (item.d.durationHours === 99999) {
+            countdownHTML = '<div style="color:#34d399;font-size:12px;font-weight:600;"><i class="fa-solid fa-infinity"></i> Lifetime</div>';
+        } else if (isEx) {
+            countdownHTML = '<div style="color:#ef4444;font-size:12px;font-weight:600;"><i class="fa-solid fa-skull-crossbones"></i> EXPIRED</div>';
+        } else {
+            const remaining = ex - now;
+            const hours = Math.floor(remaining / 3600000);
+            const mins = Math.floor((remaining % 3600000) / 60000);
+            const secs = Math.floor((remaining % 60000) / 1000);
+            let color = '#34d399';
+            if (hours < 1) color = '#ef4444';
+            else if (hours < 6) color = '#facc15';
+            countdownHTML = `<div class="key-countdown" data-ex="${ex}" style="color:${color};font-size:12px;font-weight:600;font-family:'Space Mono',monospace;"><i class="fa-solid fa-hourglass-half"></i> ${hours}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s</div>`;
+        }
+
+        tHTML += `<tr>
+            <td><input type="checkbox" ${isChecked} onchange="if(this.checked)window._selectKey('${item.k}');else window._deselectKey('${item.k}')"></td>
+            <td><div class="key-code">${item.k}</div>${badge} ${isEx ? '<span class="badge" style="background:#ef4444;color:#fff;">EXP</span>' : ''}${note}</td>
+            <td>
+                <div style="color:#e4e4e7;font-size:13px;"><i class="fa-solid fa-clock" style="color:#a1a1aa;"></i> ${item.d.durationHours === 99999 ? 'Lifetime' : item.d.durationHours + 'h'}</div>
+                <div style="color:#71717a;font-size:11px;">Cr: ${formatDate(cr)}</div>
+                <div style="color:#71717a;font-size:11px;">Ex: ${item.d.durationHours === 99999 ? 'Never' : formatDate(ex)}</div>
+                ${countdownHTML}
+            </td>
+            <td><div style="color:${isBd ? '#34d399' : '#71717a'};font-family:monospace;font-size:12px;">${isBd ? item.d.boundDeviceId : 'Unlinked'}</div></td>
+            <td>
+                <div style="display:flex;gap:5px;flex-wrap:wrap;">
+                    <button class="action-icon icon-copy" data-key="${item.k}"><i class="fa-regular fa-copy"></i></button>
+                    <button class="action-icon icon-edit" data-key="${item.k}"><i class="fa-solid fa-pen"></i></button>
+                    ${isBd ? `<button class="action-icon icon-reset" data-key="${item.k}"><i class="fa-solid fa-unlock"></i></button>` : ''}
+                    <button class="action-icon icon-del" data-key="${item.k}"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            </td>
+        </tr>`;
+
+        if (isBd) {
+            uHTML += `<tr>
+                <td style="color:#60a5fa;font-family:monospace;">${item.d.boundDeviceId}</td>
+                <td>${item.k}</td>
+                <td><button class="action-icon icon-del" data-device="${item.d.boundDeviceId}" data-key="${item.k}"><i class="fa-solid fa-ban"></i> Ban</button></td>
+            </tr>`;
+        }
+    });
+
+    tbody.innerHTML = tHTML;
+    usersBody.innerHTML = uHTML || '<tr><td colspan="3" style="text-align:center;">No active connections</td></tr>';
+    document.getElementById('totalKeys').innerText = globalKeysData.length;
+    document.getElementById('usedKeys').innerText = used;
+    
+    renderPagination(totalPages);
+    attachKeyActions();
+    updateBulkUI();
+    startKeyCountdowns();
+}
+
+// ===== KEY COUNTDOWN TIMER =====
+let keyCountdownInterval = null;
+
+function startKeyCountdowns() {
+    if (keyCountdownInterval) clearInterval(keyCountdownInterval);
+    keyCountdownInterval = setInterval(() => {
+        document.querySelectorAll('.key-countdown').forEach(el => {
+            const ex = parseInt(el.dataset.ex);
+            if (!ex) return;
+            const now = Date.now();
+            const remaining = ex - now;
+            if (remaining <= 0) {
+                el.innerHTML = '<i class="fa-solid fa-skull-crossbones"></i> EXPIRED';
+                el.style.color = '#ef4444';
+                return;
+            }
+            const hours = Math.floor(remaining / 3600000);
+            const mins = Math.floor((remaining % 3600000) / 60000);
+            const secs = Math.floor((remaining % 60000) / 1000);
+            let color = '#34d399';
+            if (hours < 1) color = '#ef4444';
+            else if (hours < 6) color = '#facc15';
+            el.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> ${hours}h ${String(mins).padStart(2,'0')}m ${String(secs).padStart(2,'0')}s`;
+            el.style.color = color;
+        });
+    }, 1000);
+}
+
+window._selectKey = function(k) { selectedKeys.add(k); updateBulkUI(); };
+window._deselectKey = function(k) { selectedKeys.delete(k); updateBulkUI(); };
+
+// ===== KEY TYPE FILTER (from inline HTML) =====
+window.applyKeyFilter = function(type) {
+    currentFilter = type;
+    currentPage = 1;
+    selectedKeys.clear();
+    renderUnifiedKeys();
+};
+
+function renderPagination(totalPages) {
+    const pag = document.getElementById('pagination');
+    if (!pag || totalPages <= 1) { if (pag) pag.innerHTML = ''; return; }
+    let html = `<button ${currentPage===1?'disabled':''} onclick="window.goToPage(${currentPage-1})"><i class="fa-solid fa-chevron-left"></i></button>`;
+    for (let i = 1; i <= totalPages; i++) {
+        if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 2) {
+            html += `<button class="${i===currentPage?'active':''}" onclick="window.goToPage(${i})">${i}</button>`;
+        } else if (Math.abs(i - currentPage) === 3) {
+            html += `<button disabled>...</button>`;
+        }
+    }
+    html += `<button ${currentPage===totalPages?'disabled':''} onclick="window.goToPage(${currentPage+1})"><i class="fa-solid fa-chevron-right"></i></button>`;
+    html += `<span style="font-size:12px;color:#a1a1aa;margin-left:10px;">${filteredKeysData.length} keys</span>`;
+    pag.innerHTML = html;
+}
+
+window.goToPage = function(page) {
+    currentPage = page;
+    renderUnifiedKeys();
+};
+
+// ===== SEARCH (with debounce + persistence) =====
+document.getElementById('searchInput')?.addEventListener('input', debounce(function() {
+    currentPage = 1;
+    selectedKeys.clear();
+    renderUnifiedKeys();
+    sessionStorage.setItem('admin_search', this.value);
+}, 300));
+
+// Restore search
+const savedSearch = sessionStorage.getItem('admin_search');
+if (savedSearch) {
+    document.getElementById('searchInput').value = savedSearch;
+}
+
+// ===== KEY ACTIONS =====
+function attachKeyActions() {
+    document.querySelectorAll('.icon-copy').forEach(btn => { btn.onclick = function() { navigator.clipboard.writeText(this.dataset.key); showToast("Token Copied!"); }; });
+    document.querySelectorAll('.icon-edit').forEach(btn => { btn.onclick = editHandler; });
+    document.querySelectorAll('.icon-del').forEach(btn => { btn.onclick = btn.dataset.device ? banHandler : deleteHandler; });
+    document.querySelectorAll('.icon-reset').forEach(btn => { btn.onclick = resetHandler; });
+}
+
+async function editHandler() {
+    const key = this.dataset.key;
+    if (!key) return;
+    const item = globalKeysData.find(d => d.k === key);
+    if (!item) return;
+    const newHours = prompt(`Update Hours for ${key}:`, item.d.durationHours);
+    if (newHours && !isNaN(newHours)) {
+        const updates = { durationHours: parseInt(newHours) };
+        updateAllKeyPaths(key, updates);
+        await logAdminActivity("Edited Key Time", key, { key, oldHours: item.d.durationHours }, "EDIT_KEY");
+        showToast("Time Updated Globally!");
+        addNotification(`Key ${key} time edited`);
+    }
+}
+
+async function deleteHandler() {
+    const key = this.dataset.key;
+    if (!key || !confirm(`Delete ${key} from ALL databases?`)) return;
+    const item = globalKeysData.find(d => d.k === key);
+    if (item) await logAdminActivity("Deleted Key", key, { key, data: item.d }, "DELETE_KEY");
+    removeAllKeyPaths(key);
+    showToast("Key Deleted Globally!");
+    addNotification(`Key ${key} deleted`);
+}
+
+async function resetHandler() {
+    const key = this.dataset.key;
+    if (!key || !confirm(`Unbind ${key} from current device?`)) return;
+    const item = globalKeysData.find(d => d.k === key);
+    const updates = { boundDeviceId: "NONE", isUsed: false };
+    updateAllKeyPaths(key, updates);
+    await logAdminActivity("Unbound Device", key, { key, oldDevice: item?.d.boundDeviceId }, "RESET_KEY");
+    showToast("Device Unbound Globally!");
+    addNotification(`Key ${key} unbound from device`);
+}
+
+async function banHandler() {
+    const deviceId = this.dataset.device;
+    const key = this.dataset.key;
+    if (!deviceId || !key || !confirm(`Ban ${deviceId} and block access?`)) return;
+    const item = globalKeysData.find(d => d.k === key);
+    await set(ref(db, `BannedDevices/${deviceId}`), { date: serverTimestamp() });
+    removeAllKeyPaths(key);
+    await logAdminActivity("Banned Device", deviceId, { deviceId, key, keyData: item?.d }, "BAN_DEVICE");
+    showToast("Device Banned & Key Destroyed!", true);
+    addNotification(`Device ${deviceId} banned`);
+}
+
+// ===== LOAD DATA =====
+function loadData() {
+    if (!db) return;
+
+    onValue(ref(db, 'SystemSettings'), (snap) => {
+        const data = snap.exists() ? snap.val() : {};
+        if (data.cooldownHours) document.getElementById('settingCooldown').value = data.cooldownHours;
+        if (data.maxKeysLimit) document.getElementById('settingMaxKeys').value = data.maxKeysLimit;
+        if (data.showLimitsOnUser !== undefined) document.getElementById('showLimitsToggle').checked = data.showLimitsOnUser;
+        if (data.maintenanceMode !== undefined) document.getElementById('maintModeToggle').checked = data.maintenanceMode;
+        if (data.autoCleanupEnabled !== undefined) document.getElementById('autoCleanupToggle').checked = data.autoCleanupEnabled;
+        
+        const adminParam = data.adminParam || 'admin=true';
+        const userParam = data.userParam || 'secure=true';
+        document.getElementById('settingAdminParam').value = adminParam;
+        document.getElementById('settingUserParam').value = userParam;
+        
+        const devLink = data.developerLink || '';
+        document.getElementById('settingDevLink').value = devLink;
+        document.getElementById('devLinkPreview').innerText = devLink || 'No link set';
+        
+        const adminBase = window.location.origin + window.location.pathname.replace(/admin\.html.*$/, '');
+        const userBase = adminBase.replace(/Admin-Key-Generators\/Admin-Key-Generators-main\/?$/, 'Key-Generators/Key-Generators-main/');
+        document.getElementById('adminLinkPreview').innerText = `${adminBase}index.html?${adminParam}`;
+        document.getElementById('userLinkPreview').innerText = `${userBase}?${userParam}`;
+        
+        if (data.defaultKeyDuration !== undefined) {
+            const hours = data.defaultKeyDuration;
+            if (hours === 99999) {
+                document.getElementById('customTimeVal').value = 1;
+                document.getElementById('customTimeType').value = 'hours';
+                syncCustomSelect('customTimeType');
+                document.getElementById('lifetimeCheck').checked = true;
+                document.getElementById('customTimeVal').disabled = true;
+                document.getElementById('customTimeType').disabled = true;
+            } else if (hours >= 24 && hours % 24 === 0) {
+                document.getElementById('customTimeVal').value = hours / 24;
+                document.getElementById('customTimeType').value = 'days';
+                syncCustomSelect('customTimeType');
+                document.getElementById('lifetimeCheck').checked = false;
+                document.getElementById('customTimeVal').disabled = false;
+                document.getElementById('customTimeType').disabled = false;
+            } else {
+                document.getElementById('customTimeVal').value = hours;
+                document.getElementById('customTimeType').value = 'hours';
+                syncCustomSelect('customTimeType');
+                document.getElementById('lifetimeCheck').checked = false;
+                document.getElementById('customTimeVal').disabled = false;
+                document.getElementById('customTimeType').disabled = false;
+            }
+        }
+        if (data.defaultKeyTier) {
+            document.getElementById('keyTypeInput').value = data.defaultKeyTier;
+            syncCustomSelect('keyTypeInput');
+        }
+        if (data.customKeyPaths) {
+            globalCustomKeyPaths = Array.isArray(data.customKeyPaths) ? data.customKeyPaths : [];
+            renderKeyPathsList();
+        }
+    });
+
+    // Activity Log with real-time listener + get() fallback
+    const logsRef = ref(db, 'AdminLogs');
+    function processLogsSnapshot(snap) {
+        allAuditLogs = [];
+        if (snap.exists()) {
+            snap.forEach(c => {
+                allAuditLogs.push({ id: c.key, data: c.val() });
+            });
+        }
+        renderAuditLogs(allAuditLogs);
+
+        // Trim old logs from Firebase if count exceeds 10
+        if (allAuditLogs.length > 10) {
+            const sorted = [...allAuditLogs].sort((a, b) => (a.data?.time || 0) - (b.data?.time || 0));
+            const toDelete = sorted.slice(0, sorted.length - 10);
+            toDelete.forEach(entry => {
+                remove(ref(db, 'AdminLogs/' + entry.id)).catch(() => {});
+            });
+        }
+    }
+    onValue(logsRef, processLogsSnapshot, (error) => {
+        console.error("AdminLogs onValue error:", error);
+        const box = document.getElementById('activityLogBody');
+        if(box) box.innerHTML = `<tr><td colspan="4" style="color:red;text-align:center;">Firebase Error: ${error.message}</td></tr>`;
+    });
+    get(logsRef).then(snap => processLogsSnapshot(snap)).catch(e => console.error("AdminLogs get() fallback error:", e));
+
+    onValue(ref(db, 'SystemStats'), (snap) => {
+        const data = snap.exists() ? snap.val() : {};
+        document.getElementById('lifetimeKeysCount').innerText = data.totalLifetimeGenerated || 0;
+        renderGraph(data.DailyGenerations || {});
+    });
+
+    loadNotifications();
+}
+
+// ===== FIREBASE HUB =====
+function loadFirebaseHub() {
+    if (!db) return;
+    onValue(ref(db, 'ConnectedFirebases'), (snap) => {
+        const tbody = document.getElementById('fbTableBody');
+        tbody.innerHTML = '';
+        const oldIds = Object.keys(activeMirrorListeners);
+        const newIds = [];
+        globalSecondaryFirebases = [];
+
+        if (snap.exists()) {
+            snap.forEach(child => {
+                const fbId = child.key;
+                const cfg = child.val();
+                newIds.push(fbId);
+                
+                let app, mirrorDb;
+                try { app = getApp(fbId); } catch(e) { app = initializeApp(cfg, fbId); }
+                mirrorDb = getDatabase(app);
+                globalSecondaryFirebases.push({ id: fbId, config: cfg, app: app, db: mirrorDb });
+
+                if (!activeMirrorListeners[fbId]) {
+                    activeMirrorListeners[fbId] = onValue(ref(mirrorDb, 'ActiveUserKeys'), (mSnap) => {
+                        allDbKeys[fbId] = mSnap.val() || {};
+                        debouncedRenderKeys(); 
+                    });
+                }
+
+                tbody.innerHTML += `<tr>
+                    <td style="color:#60a5fa;font-weight:500;">${cfg.projectName}</td>
+                    <td style="font-size:12px;color:#a1a1aa;">${cfg.databaseURL}</td>
+                    <td>
+                        <div style="display:flex;gap:5px;">
+                            <button class="action-icon icon-edit" data-fb-edit='${JSON.stringify({fbId,config:cfg})}' title="Edit"><i class="fa-solid fa-pen"></i></button>
+                            <button class="action-icon icon-del" data-fb="${fbId}" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+        }
+
+        // Cleanup removed listeners
+        oldIds.forEach(id => {
+            if (!newIds.includes(id)) {
+                if (typeof activeMirrorListeners[id] === 'function') activeMirrorListeners[id]();
+                delete allDbKeys[id];
+                delete activeMirrorListeners[id];
+                debouncedRenderKeys();
+            }
+        });
+
+        document.querySelectorAll('[data-fb]').forEach(btn => {
+            btn.addEventListener('click', async function() {
+                const fbId = this.dataset.fb;
+                if (!confirm(`Remove mirror?`)) return;
+                try {
+                    await remove(ref(db, 'ConnectedFirebases/' + fbId));
+                    await logAdminActivity("Removed Mirror DB", fbId, {}, "REMOVE_DB");
+                    showToast("Hub Disconnected!", true);
+                } catch (e) { showToast(e.message, true); }
+            });
+        });
+
+        document.querySelectorAll('[data-fb-edit]').forEach(btn => {
+            btn.addEventListener('click', function() {
+                try {
+                    const data = JSON.parse(this.dataset.fbEdit);
+                    const cfg = data.config;
+                    const fbId = data.fbId;
+                    document.getElementById('fbName').value = cfg.projectName || '';
+                    document.getElementById('fbApiKey').value = cfg.apiKey || '';
+                    document.getElementById('fbDatabaseURL').value = cfg.databaseURL || '';
+                    document.getElementById('fbAuthDomain').value = cfg.authDomain || '';
+                    document.getElementById('fbProjectId').value = cfg.projectId || '';
+                    document.getElementById('fbAppId').value = cfg.appId || '';
+                    
+                    const addBtn = document.getElementById('addFbBtn');
+                    addBtn.innerHTML = '<i class="fa-solid fa-pen-to-square"></i> Update Hub';
+                    addBtn.dataset.editId = fbId;
+                    addBtn.dataset.editOldName = cfg.projectName;
+                    
+                    let cancelBtn = document.getElementById('cancelEditBtn');
+                    if (!cancelBtn) {
+                        cancelBtn = document.createElement('button');
+                        cancelBtn.id = 'cancelEditBtn';
+                        cancelBtn.className = 'btn-outline';
+                        cancelBtn.style.cssText = 'margin-top:8px; border-color:#ef4444; color:#ef4444;';
+                        cancelBtn.innerHTML = '<i class="fa-solid fa-xmark"></i> Cancel Edit';
+                        cancelBtn.onclick = window._cancelFbEdit;
+                        addBtn.parentNode.insertBefore(cancelBtn, addBtn.nextSibling);
+                    }
+                    cancelBtn.style.display = 'block';
+                    showToast("Editing: " + cfg.projectName);
+                } catch(e) { console.error(e); }
+            });
+        });
+    });
+}
+
+// ===== CONFIG VALIDATION =====
+function validateFirebaseConfig(cfg) {
+    const errors = [];
+    if (!cfg.apiKey || cfg.apiKey.length < 10) errors.push("Invalid API Key");
+    if (!cfg.databaseURL || !cfg.databaseURL.includes('firebaseio.com')) errors.push("Invalid Database URL");
+    if (!cfg.projectId) errors.push("Missing Project ID");
+    return errors;
+}
+
+window._cancelFbEdit = function() {
+    const addBtn = document.getElementById('addFbBtn');
+    addBtn.innerHTML = '<i class="fa-solid fa-link"></i> Connect Hub';
+    delete addBtn.dataset.editId;
+    delete addBtn.dataset.editOldName;
+    document.getElementById('cancelEditBtn').style.display = 'none';
+    ['fbName','fbApiKey','fbDatabaseURL','fbAuthDomain','fbProjectId','fbAppId'].forEach(id => {
+        document.getElementById(id).value = '';
+    });
+};
+
+document.getElementById('addFbBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    const btn = this;
+    const name = document.getElementById('fbName').value.trim();
+    const apiKey = document.getElementById('fbApiKey').value.trim();
+    const dbURL = document.getElementById('fbDatabaseURL').value.trim();
+    const authDomain = document.getElementById('fbAuthDomain').value.trim();
+    const projectId = document.getElementById('fbProjectId').value.trim();
+    const appId = document.getElementById('fbAppId').value.trim();
+    
+    if (!name || !apiKey || !dbURL) return showToast("Fill Name, API Key, DB URL", true);
+    
+    const errors = validateFirebaseConfig({ apiKey, databaseURL: dbURL, projectId });
+    const errorDiv = document.getElementById('configError');
+    if (errors.length > 0) {
+        if (errorDiv) { errorDiv.textContent = errors.join(', '); errorDiv.style.display = 'block'; }
+        return;
+    }
+    if (errorDiv) errorDiv.style.display = 'none';
+    
+    try {
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        const isEdit = !!btn.dataset.editId;
+        
+        if (isEdit) {
+            const editId = btn.dataset.editId;
+            const oldName = btn.dataset.editOldName;
+            await update(ref(db, 'ConnectedFirebases/' + editId), { 
+                projectName: name, apiKey, authDomain, databaseURL: dbURL, projectId, appId 
+            });
+            await logAdminActivity("Updated Mirror DB", `${oldName} → ${name}`, { editId }, "UPDATE_DB");
+            showToast("Hub Updated Successfully!");
+            addNotification(`Mirror DB "${name}" updated`);
+            window._cancelFbEdit();
+        } else {
+            await set(ref(db, 'ConnectedFirebases/FB_' + Date.now()), { 
+                projectName: name, apiKey, authDomain, databaseURL: dbURL, projectId, appId 
+            });
+            await logAdminActivity("Added Mirror DB", name, {}, "ADD_DB");
+            showToast("Hub Connected & Syncing Started!");
+            addNotification(`Mirror DB "${name}" connected`);
+        }
+        
+        document.querySelectorAll('#firebaseHub input, #firebaseHub textarea').forEach(inp => inp.value = '');
+        btn.innerHTML = '<i class="fa-solid fa-link"></i> Connect Hub';
+    } catch (e) { 
+        const wasEdit = !!btn.dataset.editId;
+        showToast(e.message, true); 
+        btn.innerHTML = wasEdit ? '<i class="fa-solid fa-pen-to-square"></i> Update Hub' : '<i class="fa-solid fa-link"></i> Connect Hub';
+    }
+});
+
+document.getElementById('configPaste')?.addEventListener('input', function(e) {
+    const val = e.target.value;
+    if (!val.trim()) return;
+    const extract = (key) => {
+        const match = val.match(new RegExp(`${key}\\s*:\\s*["']([^"']+)["']`));
+        return match ? match[1] : '';
+    };
+    document.getElementById('fbApiKey').value = extract('apiKey');
+    document.getElementById('fbAuthDomain').value = extract('authDomain');
+    document.getElementById('fbDatabaseURL').value = extract('databaseURL');
+    document.getElementById('fbProjectId').value = extract('projectId');
+    document.getElementById('fbAppId').value = extract('appId');
+    showToast("Config Auto-filled!");
+});
+
+// ===== KEY GENERATION =====
+function randomStr() {
+    let r = ''; const c = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    for (let i = 0; i < 6; i++) r += c[Math.floor(Math.random() * c.length)]; return r;
+}
+
+document.getElementById('generateBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    const btn = this;
+    const isVip = document.getElementById('keyTypeInput').value === 'vip';
+    const note = document.getElementById('keyNote').value.trim();
+    
+    let dur = 24;
+    if (document.getElementById('lifetimeCheck').checked) dur = 99999;
+    else {
+        const v = parseInt(document.getElementById('customTimeVal').value);
+        const t = document.getElementById('customTimeType').value;
+        if (!v || v <= 0) return showToast("Invalid Time", true);
+        dur = t === 'days' ? v * 24 : v;
+    }
+    
+    const newKey = (isVip ? 'VIP-' : 'AG-') + randomStr();
+    const kData = { createdAt: serverTimestamp(), durationHours: dur, isUsed: false, boundDeviceId: "NONE", type: isVip ? "VIP" : "Normal" };
+    if (note) kData.note = note;
+
+    try {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Syncing...';
+        
+        // Write to Firebase Hubs (secondaries) ONLY — not main db
+        for (let fb of globalSecondaryFirebases) {
+            await set(ref(fb.db, 'ActiveUserKeys/' + newKey), kData).catch(e => console.error("Mirror sync:", e));
+        }
+
+        // Write to custom key paths in secondaries only
+        for (const customPath of globalCustomKeyPaths) {
+            for (const fb of globalSecondaryFirebases) {
+                await set(ref(fb.db, customPath + '/' + newKey), kData).catch(e => console.error("Custom path sync:", e));
+            }
+        }
+
+        await update(ref(db, 'SystemStats'), { totalLifetimeGenerated: increment(1) }).catch(()=>{});
+        const d = new Date();
+        const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        await update(ref(db, 'SystemStats/DailyGenerations'), { [ds]: increment(1) }).catch(()=>{});
+        
+        await logAdminActivity("Generated Key", newKey, { key: newKey }, "CREATE_KEY");
+        
+        document.getElementById('keyNote').value = '';
+        showToast("Token Generated & Pushed to All Hubs!");
+        addNotification(`New ${isVip?'VIP':'Normal'} key created: ${newKey}`);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate & Sync';
+        window.switchPageInline('manager', document.getElementById('nav-manager'));
+    } catch (e) { showToast(e.message, true); btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Generate & Sync'; }
+});
+
+// ===== CLEAN EXPIRED =====
+document.getElementById('cleanExpiredBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    if (!confirm("Clean expired tokens globally?")) return;
+    const now = Date.now();
+    let count = 0;
+    for (let item of globalKeysData) {
+        const cr = item.d.createdAt || now;
+        const ex = cr + (item.d.durationHours * 60 * 60 * 1000);
+        if (item.d.durationHours !== 99999 && now > ex) {
+            removeAllKeyPaths(item.k);
+            count++;
+        }
+    }
+    await logAdminActivity("Cleaned Database", `${count} expired keys removed`, {}, "CLEANUP");
+    showToast(`Cleaned ${count} expired tokens!`);
+    addNotification(`${count} expired keys cleaned`);
+});
+
+// ===== EXPORT CSV =====
+document.getElementById('exportCsvBtn')?.addEventListener('click', function() {
+    if (filteredKeysData.length === 0) return showToast("No data to export", true);
+    let csv = 'Key,Type,Duration(h),Created,Expires,Device,Bound,Note\n';
+    filteredKeysData.forEach(item => {
+        const cr = item.d.createdAt ? new Date(item.d.createdAt).toISOString() : '';
+        const ex = item.d.durationHours === 99999 ? 'Never' : (item.d.createdAt ? new Date(item.d.createdAt + item.d.durationHours*3600000).toISOString() : '');
+        csv += `"${item.k}","${item.d.type||''}",${item.d.durationHours},"${cr}","${ex}","${item.d.boundDeviceId||''}","${item.d.isUsed}","${item.d.note||''}"\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `keys_export_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    showToast(`Exported ${filteredKeysData.length} keys!`);
+});
+
+// ===== RULES SAVE =====
+document.getElementById('saveRulesBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    try {
+        const snap = await get(ref(db, 'SystemSettings'));
+        const oldDB = snap.exists() ? snap.val() : {};
+        const oldSettings = { cooldownHours: oldDB.cooldownHours ?? 24, maxKeysLimit: oldDB.maxKeysLimit ?? 5 };
+        const newSettings = {
+            cooldownHours: parseInt(document.getElementById('settingCooldown').value) || 24,
+            maxKeysLimit: parseInt(document.getElementById('settingMaxKeys').value) || 5,
+            showLimitsOnUser: document.getElementById('showLimitsToggle').checked
+        };
+        await update(ref(db, 'SystemSettings'), newSettings);
+        await logAdminActivity("Updated Limits", `New Limit: ${newSettings.maxKeysLimit} | Cooldown: ${newSettings.cooldownHours}h | Show Limits: ${newSettings.showLimitsOnUser ? 'ON' : 'OFF'}`, { oldSettings }, "SETTINGS");
+        showToast("Rules Saved!");
+        addNotification("User limits updated");
+    } catch (e) { showToast(e.message, true); }
+});
+
+// ===== LINKS SAVE =====
+document.getElementById('saveLinksBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    try {
+        const snap = await get(ref(db, 'SystemSettings'));
+        const oldDB = snap.exists() ? snap.val() : {};
+        const oldLinks = { userParam: oldDB.userParam ?? 'secure=true', adminParam: oldDB.adminParam ?? 'admin=true' };
+        const newLinks = {
+            userParam: document.getElementById('settingUserParam').value.trim() || 'secure=true',
+            adminParam: document.getElementById('settingAdminParam').value.trim() || 'admin=true'
+        };
+        await update(ref(db, 'SystemSettings'), newLinks);
+        await logAdminActivity("Updated Secret Links", `User: ${newLinks.userParam} | Admin: ${newLinks.adminParam}`, { oldSettings: oldLinks }, "SETTINGS");
+        showToast("Links Updated Successfully!");
+    } catch (e) { showToast(e.message, true); }
+});
+
+// ===== DEVELOPER LINK SAVE =====
+document.getElementById('saveDevLinkBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    try {
+        const devLink = document.getElementById('settingDevLink').value.trim();
+        await update(ref(db, 'SystemSettings'), { developerLink: devLink });
+        document.getElementById('devLinkPreview').innerText = devLink || 'No link set';
+        await logAdminActivity("Updated Developer Link", `Link: ${devLink}`, {}, "SETTINGS");
+        showToast("Developer Link Saved!");
+    } catch (e) { showToast(e.message, true); }
+});
+
+// ===== GLOBAL CONTROLS =====
+document.getElementById('saveGlobalBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    try {
+        const snap = await get(ref(db, 'SystemSettings'));
+        const oldDB = snap.exists() ? snap.val() : {};
+        const updates = {
+            maintenanceMode: document.getElementById('maintModeToggle').checked,
+            autoCleanupEnabled: document.getElementById('autoCleanupToggle').checked
+        };
+        await update(ref(db, 'SystemSettings'), updates);
+        await logAdminActivity("App Global Controls", `Maintenance: ${updates.maintenanceMode ? 'ON' : 'OFF'} | Auto Cleanup: ${updates.autoCleanupEnabled ? 'ON' : 'OFF'}`, { oldSettings: { maintenanceMode: oldDB.maintenanceMode ?? false, autoCleanupEnabled: oldDB.autoCleanupEnabled ?? true } }, "SETTINGS");
+        showToast("Global States Saved!");
+        addNotification(`Maintenance: ${updates.maintenanceMode ? 'ON' : 'OFF'} | Auto Cleanup: ${updates.autoCleanupEnabled ? 'ON' : 'OFF'}`);
+    } catch (e) { showToast(e.message, true); }
+});
+
+// ===== MANUAL BAN =====
+document.getElementById('manualBanBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    const deviceId = document.getElementById('banInput').value.trim();
+    if (!deviceId) return showToast("Enter Device ID", true);
+    try {
+        await set(ref(db, 'BannedDevices/' + deviceId), { date: serverTimestamp() });
+        await logAdminActivity("Manual Ban", deviceId, {}, "BAN_DEVICE");
+        showToast(`Device ${deviceId} banned!`, true);
+        addNotification(`Device ${deviceId} manually banned`);
+        document.getElementById('banInput').value = '';
+    } catch (e) { showToast(e.message, true); }
+});
+
+// ===== CUSTOM KEY PATHS =====
+function renderKeyPathsList() {
+    const container = document.getElementById('keyPathsList');
+    if (!container) return;
+    if (globalCustomKeyPaths.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:#52525b; text-align:center; padding:10px;">No custom paths added. Keys only sync to ActiveUserKeys.</p>';
+        return;
+    }
+    container.innerHTML = globalCustomKeyPaths.map(p => `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 14px; background:rgba(15,15,18,0.6); border:1px solid #27272a; border-radius:10px; transition: all 0.2s;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <i class="fa-solid fa-folder" style="color:#facc15; font-size:14px;"></i>
+                <code style="font-family:'Space Mono',monospace; font-size:13px; color:#818cf8;">${p}</code>
+            </div>
+            <button class="action-icon icon-del" onclick="window.removeKeyPath('${p}')" style="padding:6px 10px;"><i class="fa-solid fa-trash"></i></button>
+        </div>
+    `).join('');
+}
+
+document.getElementById('addKeyPathBtn')?.addEventListener('click', async function() {
+    if (!db) return;
+    const input = document.getElementById('newKeyPath');
+    const path = input.value.trim().replace(/^\/+|\/+$/g, '');
+    if (!path) return showToast("Enter a path name", true);
+    if (path === 'ActiveUserKeys' || path === 'SystemSettings' || path === 'SystemStats' || path === 'BannedDevices' || path === 'AdminLogs' || path === 'AdminNotifications' || path === 'ConnectedFirebases') {
+        return showToast("Cannot use reserved path names", true);
+    }
+    if (globalCustomKeyPaths.includes(path)) return showToast("Path already exists", true);
+    
+    try {
+        globalCustomKeyPaths.push(path);
+        await set(ref(db, 'SystemSettings/customKeyPaths'), globalCustomKeyPaths);
+        await logAdminActivity("Added Key Path", path, { paths: [...globalCustomKeyPaths] }, "SETTINGS");
+        renderKeyPathsList();
+        input.value = '';
+        showToast(`Path "${path}" added!`);
+        addNotification(`Custom key path added: ${path}`);
+    } catch (e) { showToast(e.message, true); }
+});
+
+window.removeKeyPath = async function(path) {
+    if (!db) return;
+    if (!confirm(`Remove path "${path}"? Keys will no longer sync to this path.`)) return;
+    try {
+        globalCustomKeyPaths = globalCustomKeyPaths.filter(p => p !== path);
+        await set(ref(db, 'SystemSettings/customKeyPaths'), globalCustomKeyPaths);
+        await logAdminActivity("Removed Key Path", path, { paths: [...globalCustomKeyPaths] }, "SETTINGS");
+        renderKeyPathsList();
+        showToast(`Path "${path}" removed!`);
+        addNotification(`Custom key path removed: ${path}`);
+    } catch (e) { showToast(e.message, true); }
+};
+
+// ===== AUTO CLEANUP (with toggle) =====
+function startAutoCleanup() {
+    if (cleanupInterval) clearInterval(cleanupInterval);
+    cleanupInterval = setInterval(async () => {
+        const autoCleanupEnabled = document.getElementById('autoCleanupToggle')?.checked;
+        if (!db || !autoCleanupEnabled || globalKeysData.length === 0) return;
+        const now = Date.now();
+        for (let item of globalKeysData) {
+            const cr = item.d.createdAt || now;
+            const ex = cr + (item.d.durationHours * 60 * 60 * 1000);
+            if (item.d.durationHours !== 99999 && now > ex) {
+                removeAllKeyPaths(item.k);
+            }
+        }
+    }, 60000);
+}
+
+// ===== DASHBOARD REFRESH =====
+window.refreshDashboard = function() {
+    showToast("Dashboard refreshed!");
+    loadData();
+};
+
+// ===== INIT =====
+window.showToast?.("Connecting to Firebase...");
+onAuthStateChanged(auth, (user) => {
+    if (user) {
+        document.body.setAttribute('data-ready', 'true');
+        loadData();
+        loadFirebaseHub();
+        startAutoCleanup();
+        setTimeout(() => { window.hideStatusOverlay?.(); }, 1500);
+    } else {
+        sessionStorage.removeItem('admin_session');
+        window.location.href = 'index.html';
+    }
+});

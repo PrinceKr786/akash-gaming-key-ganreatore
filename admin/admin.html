@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Master Dashboard</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="admin-style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+    </style>
+</head>
+<body>
+
+    <div id="sidebarOverlay"></div>
+    <div id="toastNotice">Saved Successfully</div>
+
+    <div id="mainWrapper" style="display: flex; width: 100%; height: 100vh; overflow: hidden;">
+        
+        <div class="sidebar" id="sidebar">
+            <div class="logo-area">
+                <img src="logo.png" alt="AG Logo" style="width: 120px; border-radius: 10px; margin-bottom: 10px;" onerror="this.style.display='none';">
+            </div>
+            <ul class="nav-links">
+                <li><a href="#" class="active" id="nav-dashboard"><i class="fa-solid fa-chart-pie"></i> Dashboard</a></li>
+                <li><a href="#" id="nav-generator"><i class="fa-solid fa-bolt"></i> Generator & Rules</a></li>
+                <li><a href="#" id="nav-manager"><i class="fa-solid fa-table-list"></i> Key Manager</a></li>
+                <li><a href="#" id="nav-appUsers"><i class="fa-solid fa-users-viewfinder"></i> Active Devices</a></li>
+                <li><a href="#" id="nav-firebaseHub"><i class="fa-solid fa-server"></i> Firebase Hub</a></li>
+                <li><a href="#" id="nav-security"><i class="fa-solid fa-shield-halved"></i> Security Panel</a></li>
+                <li><a href="#" id="nav-settings"><i class="fa-solid fa-gear"></i> Settings</a></li>
+            </ul>
+        </div>
+
+        <div class="content-area" id="contentArea">
+            
+            <div class="topbar">
+                <button class="menu-toggle" id="menuToggleBtn"><i class="fa-solid fa-bars-staggered"></i></button>
+                <div style="flex:1;"></div> 
+                <div class="admin-profile">
+                    <div class="notification-bell" id="notifBell" onclick="toggleNotifications()">
+                        <i class="fa-solid fa-bell"></i>
+                        <div class="notification-badge" id="notifBadge" style="display:none;">0</div>
+                        <div class="notification-dropdown" id="notifDropdown">
+                            <div class="notification-item" style="text-align:center;color:#52525b;">No notifications yet</div>
+                        </div>
+                    </div>
+                    <span class="session-timer" id="sessionTimer">30:00</span>
+                    <img src="logo.png" alt="Admin" onerror="this.src='https://cdn-icons-png.flaticon.com/512/149/149071.png'">
+                    <span class="admin-name">Admin</span>
+                    <button class="logout-btn" onclick="window.logoutAdmin()" style="background:transparent; border:none; color:#ef4444; cursor:pointer; padding:4px;">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ===== DASHBOARD ===== -->
+            <div id="dashboard" class="page-section active">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-chart-line"></i> System Overview</h2>
+                    <button class="btn-outline" onclick="window.refreshDashboard()" style="width:auto;padding:8px 16px;font-size:13px;border-radius:50px;"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                </div>
+                <div class="stats-grid">
+                    <div class="glow-card stat-card" style="border-top: 3px solid #facc15;">
+                        <p class="input-label">All-Time Created Keys</p>
+                        <h3 id="lifetimeKeysCount" style="color: #facc15;">0</h3>
+                    </div>
+                    <div class="glow-card stat-card">
+                        <p class="input-label">Active / Live Keys</p>
+                        <h3 id="totalKeys" class="c-blue">0</h3>
+                    </div>
+                    <div class="glow-card stat-card">
+                        <p class="input-label">Connected Devices</p>
+                        <h3 id="usedKeys" class="c-green">0</h3>
+                    </div>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="glow-card" style="grid-column: 1 / -1;">
+                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-chart-area"></i> Last 30 Days Key Generations</h3>
+                        <div class="chart-container">
+                            <canvas id="keysChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="glow-card" style="grid-column: 1 / -1;">
+                        <div class="log-header">
+                            <h3 style="font-size: 16px;"><i class="fa-solid fa-clipboard-list"></i> Admin Activity Log</h3>
+                            <button class="btn-outline" onclick="window.clearActivityLog()" style="width: auto; padding: 5px 15px; font-size: 12px; border-radius: 50px;">Clear History</button>
+                        </div>
+                        <div class="audit-filters" id="auditFilters">
+                            <div class="custom-select" data-id="auditTypeFilter">
+                                <div class="cs-trigger" onclick="this.parentElement.classList.toggle('open')">
+                                    <span class="cs-selected">All Actions</span>
+                                    <i class="fa-solid fa-chevron-down cs-arrow"></i>
+                                </div>
+                                <div class="cs-dropdown">
+                                    <div class="cs-option active" data-value="all" onclick="window._selectCS(this)">All Actions</div>
+                                    <div class="cs-option" data-value="CREATE_KEY" onclick="window._selectCS(this)">Key Created</div>
+                                    <div class="cs-option" data-value="DELETE_KEY" onclick="window._selectCS(this)">Key Deleted</div>
+                                    <div class="cs-option" data-value="EDIT_KEY" onclick="window._selectCS(this)">Key Edited</div>
+                                    <div class="cs-option" data-value="RESET_KEY" onclick="window._selectCS(this)">Device Unbound</div>
+                                    <div class="cs-option" data-value="BAN_DEVICE" onclick="window._selectCS(this)">Device Banned</div>
+                                    <div class="cs-option" data-value="SETTINGS" onclick="window._selectCS(this)">Settings Changed</div>
+                                    <div class="cs-option" data-value="LOGIN" onclick="window._selectCS(this)">Admin Login</div>
+                                </div>
+                                <input type="hidden" id="auditTypeFilter" value="all">
+                            </div>
+                            <input type="date" id="auditDateFrom" onchange="window.filterAuditLogs()" placeholder="From">
+                            <input type="date" id="auditDateTo" onchange="window.filterAuditLogs()" placeholder="To">
+                        </div>
+                        <div class="table-wrapper" id="activityLogTableWrapper">
+                            <table>
+                                <thead><tr><th>Action</th><th>Details</th><th>Time</th><th>Control</th></tr></thead>
+                                <tbody id="activityLogBody">
+                                    <tr><td colspan="4" style="text-align: center; padding: 20px;">No recent activity</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== GENERATOR & RULES ===== -->
+            <div id="generator" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-bolt"></i> Generator System</h2>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="glow-card">
+                        <h3 style="font-size: 16px; margin-bottom: 15px; color:#60a5fa;"><i class="fa-solid fa-key"></i> Create Access Token</h3>
+                        <div class="form-grid">
+                            <div>
+                                <span class="input-label">Token Tier</span>
+                                <div class="custom-select cs-input-dark" data-id="keyTypeInput">
+                                    <div class="cs-trigger" onclick="this.parentElement.classList.toggle('open')">
+                                        <span class="cs-selected">Standard (AG-)</span>
+                                        <i class="fa-solid fa-chevron-down cs-arrow"></i>
+                                    </div>
+                                    <div class="cs-dropdown">
+                                        <div class="cs-option active" data-value="normal" onclick="window._selectCS(this)">Standard (AG-)</div>
+                                        <div class="cs-option" data-value="vip" onclick="window._selectCS(this)">Premium (VIP-)</div>
+                                    </div>
+                                    <input type="hidden" id="keyTypeInput" value="normal">
+                                </div>
+                            </div>
+                            <div>
+                                <span class="input-label">Key Alias / Note (Optional)</span>
+                                <input type="text" id="keyNote" class="input-dark" placeholder="e.g. For Rohan">
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div>
+                                <span class="input-label">Time Value</span>
+                                <input type="number" id="customTimeVal" class="input-dark" value="24" min="1">
+                            </div>
+                            <div>
+                                <span class="input-label">Time Format</span>
+                                <div class="custom-select cs-input-dark" data-id="customTimeType">
+                                    <div class="cs-trigger" onclick="this.parentElement.classList.toggle('open')">
+                                        <span class="cs-selected">Hours</span>
+                                        <i class="fa-solid fa-chevron-down cs-arrow"></i>
+                                    </div>
+                                    <div class="cs-dropdown">
+                                        <div class="cs-option active" data-value="hours" onclick="window._selectCS(this)">Hours</div>
+                                        <div class="cs-option" data-value="days" onclick="window._selectCS(this)">Days</div>
+                                    </div>
+                                    <input type="hidden" id="customTimeType" value="hours">
+                                </div>
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin: 15px 0 25px 0;">
+                            <div>
+                                <span style="font-size:14px; font-weight:500; color:#facc15;">Lifetime Access</span><br>
+                                <span style="font-size:11px; color:#a1a1aa;">Key will never expire</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="lifetimeCheck">
+                                <span class="slider round"></span>
+                            </label>
+                        </div>
+                        <div class="gen-actions" style="display: flex; gap: 10px;">
+                            <button class="btn-neon" id="generateBtn" style="flex:2;"><i class="fa-solid fa-wand-magic-sparkles"></i> Generate & Sync</button>
+                            <button class="btn-outline" id="saveDefaultDurationBtn" style="flex:1; border-color:#facc15; color:#facc15;"><i class="fa-solid fa-floppy-disk"></i> Save as Default</button>
+                        </div>
+                        <div style="margin-top:10px; font-size:12px; color:#a1a1aa; text-align:center;">
+                            <i class="fa-solid fa-info-circle"></i> "Save as Default" sets this duration for user panel key generation
+                        </div>
+                    </div>
+                    <div class="glow-card">
+                        <h3 style="font-size: 16px; margin-bottom: 15px; color:#facc15;"><i class="fa-solid fa-sliders"></i> Website User Limits</h3>
+                        <span class="input-label">Cooldown Time (Hours)</span>
+                        <input type="number" id="settingCooldown" class="input-dark" placeholder="e.g. 24" value="24" min="1">
+                        <span class="input-label">Maximum Keys Limit</span>
+                        <input type="number" id="settingMaxKeys" class="input-dark" placeholder="e.g. 5" value="5" min="1">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;">
+                            <span style="color:#a1a1aa;font-size:13px;"><i class="fa-solid fa-eye"></i> Show Limits on User Panel</span>
+                            <label class="toggle"><input type="checkbox" id="showLimitsToggle" checked><span class="toggle-slider"></span></label>
+                        </div>
+                        <button class="btn-outline" id="saveRulesBtn" style="border-color:#6366f1; color:#6366f1; margin-top:12px;">Save Rules to DB</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== KEY MANAGER ===== -->
+            <div id="manager" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-table-list"></i> Key Manager</h2>
+                </div>
+                <div class="manager-toolbar">
+                    <div class="filter-group">
+                        <button class="filter-btn active" onclick="filterKeys('all')">All</button>
+                        <button class="filter-btn" onclick="filterKeys('vip')">VIP</button>
+                        <button class="filter-btn" onclick="filterKeys('normal')">AG</button>
+                        <button class="filter-btn" onclick="filterKeys('active')">Active</button>
+                        <button class="filter-btn" onclick="filterKeys('expired')">Expired</button>
+                    </div>
+                    <input type="text" id="searchInput" class="input-dark" placeholder="Search ID or Name...">
+                    <div class="manager-actions">
+                        <button class="btn-outline" id="exportCsvBtn" style="width:auto;padding:10px 15px;border-color:#34d399;color:#34d399;" title="Export CSV"><i class="fa-solid fa-download"></i></button>
+                        <button class="btn-danger" id="cleanExpiredBtn" style="border-radius:10px; padding:10px 15px; font-weight:bold; cursor:pointer; border:none; color:#fff;"><i class="fa-solid fa-broom"></i> Clean</button>
+                    </div>
+                </div>
+                <div class="bulk-actions" id="bulkActions">
+                    <span id="bulkCount">0 selected</span>
+                    <button class="btn-outline" onclick="window.bulkDelete()" style="width:auto;padding:6px 12px;font-size:12px;border-color:#ef4444;color:#ef4444;">Bulk Delete</button>
+                    <button class="btn-outline" onclick="window.bulkUnbind()" style="width:auto;padding:6px 12px;font-size:12px;border-color:#34d399;color:#34d399;">Bulk Unbind</button>
+                    <button class="btn-outline" onclick="window.clearSelection()" style="width:auto;padding:6px 12px;font-size:12px;">Clear</button>
+                </div>
+                <div class="table-wrapper">
+                    <table id="keysTable">
+                        <thead><tr><th style="width:40px;"><input type="checkbox" id="selectAll" onchange="window.toggleSelectAll()"></th><th>Token & Identity</th><th>Lifespan Details</th><th>Device Bind</th><th>Manage Controls</th></tr></thead>
+                        <tbody id="tableBody"><tr><td colspan="5" style="text-align: center; padding:30px;"><i class="fa-solid fa-spinner fa-spin"></i> Syncing Unified Data...</td></tr></tbody>
+                    </table>
+                </div>
+                <div class="pagination" id="pagination"></div>
+            </div>
+
+            <!-- ===== ACTIVE DEVICES ===== -->
+            <div id="appUsers" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-users-viewfinder"></i> Active Devices</h2>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>Device Hardware ID</th><th>Used Token</th><th>Status & Action</th></tr></thead>
+                        <tbody id="usersBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ===== FIREBASE HUB ===== -->
+            <div id="firebaseHub" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-server"></i> Firebase Hub</h2>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="glow-card">
+                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-plus"></i> Add Mirror Database</h3>
+                        <div style="background: rgba(99, 102, 241, 0.1); padding: 15px; border-radius: 10px; border: 1px dashed rgba(99, 102, 241, 0.3); margin-bottom: 20px;">
+                            <span class="input-label" style="color:#818cf8;"><i class="fa-solid fa-bolt"></i> Auto-Fill Config Code</span>
+                            <textarea id="configPaste" class="input-dark" placeholder="Paste your entire firebaseConfig code here..." style="height: 80px; margin-bottom: 0; font-size:11px; font-family:monospace;"></textarea>
+                        </div>
+                        <div id="configError" style="color:#ef4444;font-size:12px;margin-bottom:10px;display:none;"></div>
+                        <div class="form-grid">
+                            <input type="text" id="fbName" class="input-dark" placeholder="Alias Name" style="margin:0;">
+                            <input type="text" id="fbApiKey" class="input-dark" placeholder="API Key" style="margin:0;">
+                        </div>
+                        <input type="text" id="fbDatabaseURL" class="input-dark" placeholder="Database URL">
+                        <div class="form-grid">
+                            <input type="text" id="fbAuthDomain" class="input-dark" placeholder="Auth Domain" style="margin:0;">
+                            <input type="text" id="fbProjectId" class="input-dark" placeholder="Project ID" style="margin:0;">
+                        </div>
+                        <input type="text" id="fbAppId" class="input-dark" placeholder="App ID">
+                        <button class="btn-neon" id="addFbBtn"><i class="fa-solid fa-link"></i> Connect Hub</button>
+                    </div>
+                    <div class="table-wrapper" style="height: fit-content;">
+                        <table>
+                            <thead><tr><th>Project Info</th><th>Endpoint URL</th><th>Action</th></tr></thead>
+                            <tbody id="fbTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== SECURITY PANEL ===== -->
+            <div id="security" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-shield-halved"></i> Security Panel</h2>
+                </div>
+                <div class="dashboard-grid">
+                    <div class="glow-card">
+                        <h3 style="font-size: 16px; margin-bottom: 15px; color:#ef4444;"><i class="fa-solid fa-ban"></i> Manual Ban</h3>
+                        <span class="input-label">Target Device ID</span>
+                        <input type="text" id="banInput" class="input-dark" placeholder="Enter ID to block...">
+                        <button class="btn-danger" id="manualBanBtn" style="padding:12px; border-radius:10px; border:none; font-weight:bold; color:#fff; cursor:pointer; width:100%;"><i class="fa-solid fa-gavel"></i> Ban Device</button>
+                    </div>
+                    <div class="table-wrapper" style="height: fit-content;">
+                        <table>
+                            <thead><tr><th>Banned Device ID</th><th>Control</th></tr></thead>
+                            <tbody id="bannedBody"><tr><td colspan="2" style="text-align:center; color:#a1a1aa;">No banned devices</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== SETTINGS ===== -->
+            <div id="settings" class="page-section">
+                <div class="page-header">
+                    <h2 class="section-title"><i class="fa-solid fa-gear"></i> System Settings</h2>
+                </div>
+                <div class="dashboard-grid settings-grid">
+                    <div class="glow-card">
+                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-link"></i> Secret URLs</h3>
+                        <span class="input-label">User Link Parameter (Generator Page)</span>
+                        <input type="text" id="settingUserParam" class="input-dark" placeholder="e.g. secure=true">
+                        <span class="input-label">Admin Link Parameter (Optional By-pass / Auth Path)</span>
+                        <input type="text" id="settingAdminParam" class="input-dark" placeholder="e.g. admin=true">
+                        <button class="btn-outline" id="saveLinksBtn" style="margin-bottom: 15px;">Update Link Settings</button>
+                        <div class="link-preview-box">
+                            <span class="link-label">Admin Link:</span><br>
+                            <span id="adminLinkPreview" class="link-url" style="color:#6366f1;">Loading...</span>
+                        </div>
+                        <div class="link-preview-box">
+                            <span class="link-label">User Generator Link:</span><br>
+                            <span id="userLinkPreview" class="link-url" style="color:#f472b6;">Loading...</span>
+                        </div>
+                    </div>
+                    <div class="glow-card" style="height: fit-content;">
+                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-user-astronaut"></i> Developer Button Link</h3>
+                        <span class="input-label">Developer Button URL (User Panel)</span>
+                        <input type="text" id="settingDevLink" class="input-dark" placeholder="e.g. https://t.me/yourchannel">
+                        <button class="btn-outline" id="saveDevLinkBtn" style="margin-top: 10px;">Save Developer Link</button>
+                        <div class="link-preview-box" style="margin-top: 10px;">
+                            <span class="link-label">Current Link:</span><br>
+                            <span id="devLinkPreview" class="link-url" style="color:#22d3ee;">Loading...</span>
+                        </div>
+                    </div>
+                    <div class="glow-card" style="height: fit-content;">
+                        <h3 style="font-size: 16px; margin-bottom: 15px; color:#f472b6;"><i class="fa-solid fa-power-off"></i> Global App Controls</h3>
+                        <div class="setting-toggle-row">
+                            <div class="setting-toggle-info">
+                                <h4>Maintenance Mode</h4>
+                                <span>Block all app logins</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="maintModeToggle">
+                                <span class="slider round"></span>
+                            </label>
+                        </div>
+                        <div class="setting-toggle-row">
+                            <div class="setting-toggle-info">
+                                <h4>Auto Cleanup</h4>
+                                <span>Remove expired keys automatically</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="autoCleanupToggle" checked>
+                                <span class="slider round"></span>
+                            </label>
+                        </div>
+                        <button class="btn-outline" id="saveGlobalBtn">Save States</button>
+                    </div>
+                    <div class="glow-card" style="grid-column: 1 / -1;">
+                        <h3 style="font-size: 16px; margin-bottom: 5px; color:#facc15;"><i class="fa-solid fa-folder-tree"></i> Custom Key Paths</h3>
+                        <p style="font-size:12px; color:#71717a; margin-bottom:15px;">Keys will also be written to these Firebase paths alongside ActiveUserKeys. Add your app database paths here.</p>
+                        <div style="display:flex; gap:10px; margin-bottom:15px;">
+                            <input type="text" id="newKeyPath" class="input-dark" placeholder="e.g. users or app_data/user_keys" style="margin-bottom:0; flex:1;">
+                            <button class="btn-neon" id="addKeyPathBtn" style="width:auto; padding:12px 20px; flex-shrink:0;"><i class="fa-solid fa-plus"></i> Add</button>
+                        </div>
+                        <div id="keyPathsList" style="display:flex; flex-direction:column; gap:8px;"></div>
+                        <div style="margin-top:15px; padding:12px; background:rgba(250,204,21,0.08); border:1px solid rgba(250,204,21,0.2); border-radius:10px;">
+                            <p style="font-size:11px; color:#facc15; margin:0;"><i class="fa-solid fa-info-circle"></i> <b>How it works:</b> Keys are always written to <code style="background:rgba(250,204,21,0.15); padding:2px 6px; border-radius:4px;">ActiveUserKeys</code> by default. Adding paths here means keys are also synced to those paths in ALL connected databases (main + mirrors).</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            const menuBtn = document.getElementById('menuToggleBtn');
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebarOverlay');
+            if (menuBtn && sidebar && overlay) {
+                function toggleSidebar(e) {
+                    e.stopPropagation();
+                    sidebar.classList.toggle('mobile-open');
+                    overlay.classList.toggle('active');
+                }
+                function closeSidebar() {
+                    sidebar.classList.remove('mobile-open');
+                    overlay.classList.remove('active');
+                }
+                menuBtn.addEventListener('click', toggleSidebar);
+                overlay.addEventListener('click', closeSidebar);
+                window.addEventListener('resize', function() {
+                    if (window.innerWidth > 900) closeSidebar();
+                });
+            }
+        })();
+
+        (function() {
+            const navMap = {
+                'nav-dashboard': 'dashboard',
+                'nav-generator': 'generator',
+                'nav-manager': 'manager',
+                'nav-appUsers': 'appUsers',
+                'nav-firebaseHub': 'firebaseHub',
+                'nav-security': 'security',
+                'nav-settings': 'settings'
+            };
+            window.switchPageInline = function(pageId, element) {
+                document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
+                const target = document.getElementById(pageId);
+                if (target) target.classList.add('active');
+                document.querySelectorAll('.nav-links a').forEach(l => l.classList.remove('active'));
+                if (element) element.classList.add('active');
+                sessionStorage.setItem('admin_current_page', pageId);
+                if (window.innerWidth <= 900) {
+                    document.getElementById('sidebar')?.classList.remove('mobile-open');
+                    document.getElementById('sidebarOverlay')?.classList.remove('active');
+                }
+            };
+            Object.keys(navMap).forEach(navId => {
+                const link = document.getElementById(navId);
+                if (link) link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    window.switchPageInline(navMap[navId], this);
+                });
+            });
+            // Restore last page
+            const lastPage = sessionStorage.getItem('admin_current_page');
+            if (lastPage && navMap) {
+                const navId = Object.keys(navMap).find(k => navMap[k] === lastPage);
+                if (navId) {
+                    document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
+                    document.getElementById(lastPage)?.classList.add('active');
+                    document.querySelectorAll('.nav-links a').forEach(l => l.classList.remove('active'));
+                    document.getElementById(navId)?.classList.add('active');
+                }
+            }
+        })();
+
+        function filterKeys(type) {
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            window.applyKeyFilter(type);
+        }
+
+        window.hideStatusOverlay = function() {
+            window.showToast?.("Firebase Connected — System Ready");
+        };
+
+        window.updateStatus = function(text) {
+            window.showToast?.(text || "Loading...");
+        };
+
+        // Session Timer
+        (function() {
+            let sessionTime = 30 * 60;
+            const timerEl = document.getElementById('sessionTimer');
+            setInterval(() => {
+                if (sessionTime <= 0) return;
+                sessionTime--;
+                const m = Math.floor(sessionTime / 60);
+                const s = sessionTime % 60;
+                timerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+                if (sessionTime <= 300) timerEl.style.color = '#ef4444';
+            }, 1000);
+        })();
+
+        // Notifications
+        window.toggleNotifications = function() {
+            const dd = document.getElementById('notifDropdown');
+            const wasShown = dd.classList.contains('show');
+            dd.classList.toggle('show');
+            let overlay = document.getElementById('notifOverlay');
+            if (!wasShown) {
+                window.markNotifsRead?.();
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.id = 'notifOverlay';
+                    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:999;';
+                    overlay.addEventListener('click', function() { window.toggleNotifications(); });
+                    document.body.appendChild(overlay);
+                }
+                overlay.style.display = 'block';
+            } else {
+                if (overlay) overlay.style.display = 'none';
+            }
+        };
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('#notifBell')) {
+                document.getElementById('notifDropdown')?.classList.remove('show');
+                const ov = document.getElementById('notifOverlay');
+                if (ov) ov.style.display = 'none';
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+            if (e.ctrlKey || e.metaKey) return;
+            switch(e.key) {
+                case '1': window.switchPageInline('dashboard', document.getElementById('nav-dashboard')); break;
+                case '2': window.switchPageInline('generator', document.getElementById('nav-generator')); break;
+                case '3': window.switchPageInline('manager', document.getElementById('nav-manager')); break;
+                case '4': window.switchPageInline('appUsers', document.getElementById('nav-appUsers')); break;
+                case '5': window.switchPageInline('firebaseHub', document.getElementById('nav-firebaseHub')); break;
+                case '6': window.switchPageInline('security', document.getElementById('nav-security')); break;
+                case '7': window.switchPageInline('settings', document.getElementById('nav-settings')); break;
+                case 'r': if (!e.ctrlKey && !e.metaKey) window.refreshDashboard?.(); break;
+            }
+        });
+    </script>
+
+    <script type="module" src="admin-script.js"></script>
+</body>
+</html>
