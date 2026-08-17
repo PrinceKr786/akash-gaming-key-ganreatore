@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Premium Tech Key Generator</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="offlineIndicator">
+        <i class="fa-solid fa-wifi-slash"></i>
+        <span>You are offline. Some features may not work.</span>
+    </div>
+
+    <div class="container">
+        
+        <div class="top-controls">
+            <button class="icon-btn" id="themeToggle" onclick="toggleTheme()" title="Toggle Theme">
+                <i class="fa-solid fa-sun"></i>
+            </button>
+            <button class="icon-btn" onclick="showKeyHistory()" title="Key History">
+                <i class="fa-solid fa-clock-rotate-left"></i>
+            </button>
+        </div>
+
+        <div class="card" id="maintenanceCard" style="display: none; border-color: #facc15;">
+            <i class="fa-solid fa-person-digging" style="font-size: 50px; color: #facc15; margin-bottom: 15px; display:block; text-align:center;"></i>
+            <h2 style="color: #fff; margin-bottom: 10px; text-align:center;">Maintenance Break</h2>
+            <p style="color: #94a3b8; font-size: 14px; text-align:center;">Server par update chal raha hai. Kripya kuch samay baad aayen.</p>
+        </div>
+
+        <div class="card" id="errorCard" style="display: none; border-color: #ef4444;">
+            <i class="fa-solid fa-server" style="font-size: 50px; color: #ef4444; margin-bottom: 15px; display:block; text-align:center;"></i>
+            <h2 style="color: #fff; margin-bottom: 10px; text-align:center;">Servers Offline</h2>
+            <p style="color: #94a3b8; font-size: 14px; text-align:center;" id="errorMsg">Admin ne abhi tak koi database server connect nahi kiya hai.</p>
+        </div>
+
+        <div id="expiryWarning" class="expiry-warning" style="display: none;"></div>
+
+        <div id="limitsInfo" class="limits-info" style="display:none;"></div>
+
+        <div class="card" id="generationCard" style="display: none;">
+            <div id="genLoader" class="loader-container">
+                <div class="spinner"></div>
+                <p style="color: #94a3b8; font-size: 14px; margin-top: 10px;">Connecting to Hub Servers...</p>
+            </div>
+            
+            <div id="genResult" class="new-key-box" style="display: none;">
+                <div class="header-title" style="margin-bottom: 5px;" id="genTitle">
+                    <i class="fa-solid fa-bolt" style="color: #fbbf24;"></i> Key Generated!
+                </div>
+                <p style="color: #94a3b8; font-size: 12px; margin-bottom: 10px;" id="genDesc">Valid for the next 24 Hours</p>
+                
+                <div class="key-display" id="newKeyValue">AG-XXXXXX</div>
+                
+                <div class="key-actions">
+                    <button class="btn-copy" id="copyBtn" onclick="copyText(document.getElementById('newKeyValue').innerText)">
+                        <i class="fa-solid fa-clipboard"></i> Copy
+                    </button>
+                    <button class="btn-share" id="shareBtn" style="display: none;" onclick="shareKey(document.getElementById('newKeyValue').innerText)">
+                        <i class="fa-solid fa-share-nodes"></i> Share
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" id="dashboardCard">
+            <div class="header-title">
+                <i class="fa-solid fa-microchip" style="color: #818cf8;"></i> Live Dashboard
+            </div>
+
+            <div class="history-section">
+                <div class="section-title">
+                    <i class="fa-solid fa-clock-rotate-left"></i> Your Active Keys
+                </div>
+
+                <div id="historyLoader" class="loader-container">
+                    <div class="spinner"></div>
+                </div>
+
+                <div class="keys-list" id="keysContainer" style="display: none;"></div>
+
+                <div class="empty-state" id="emptyState" style="display: none;">
+                    <i class="fa-solid fa-box-open"></i>
+                    No active keys found.<br>Generate one from the App link.
+                </div>
+            </div>
+        </div>
+
+        <a href="../Admin-Key-Generators/admin.html" class="promo-box">
+            <img src="logo.png" alt="Developer Logo" onerror="this.src='https://cdn-icons-png.flaticon.com/512/149/149071.png'">
+            <span>Developer Akash Gaming</span>
+        </a>
+
+    </div>
+
+    <div class="toast" id="toast"><i class="fa-solid fa-check"></i> Copied!</div>
+
+    <div class="history-modal" id="historyModal">
+        <div class="history-modal-content">
+            <div class="history-modal-header">
+                <h3><i class="fa-solid fa-clock-rotate-left"></i> All Generated Keys</h3>
+                <button class="icon-btn" onclick="closeHistoryModal()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="history-modal-body" id="historyList"></div>
+        </div>
+    </div>
+
+    <script type="module" src="script.js"></script>
+</body>
+</html>
