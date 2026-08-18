@@ -749,6 +749,7 @@ function loadData() {
         const data = snap.exists() ? snap.val() : {};
         if (data.cooldownHours) document.getElementById('settingCooldown').value = data.cooldownHours;
         if (data.maxKeysLimit) document.getElementById('settingMaxKeys').value = data.maxKeysLimit;
+        if (data.maxDevicesLimit !== undefined) document.getElementById('settingDeviceLimit').value = data.maxDevicesLimit;
         if (data.showLimitsOnUser !== undefined) document.getElementById('showLimitsToggle').checked = data.showLimitsOnUser;
         if (data.maintenanceMode !== undefined) document.getElementById('maintModeToggle').checked = data.maintenanceMode;
         if (data.autoCleanupEnabled !== undefined) document.getElementById('autoCleanupToggle').checked = data.autoCleanupEnabled;
@@ -1127,6 +1128,7 @@ document.getElementById('saveRulesBtn')?.addEventListener('click', async functio
         const newSettings = {
             cooldownHours: parseInt(document.getElementById('settingCooldown').value) || 24,
             maxKeysLimit: parseInt(document.getElementById('settingMaxKeys').value) || 5,
+            maxDevicesLimit: parseInt(document.getElementById('settingDeviceLimit').value) || 1,
             showLimitsOnUser: document.getElementById('showLimitsToggle').checked
         };
         await update(ref(db, 'SystemSettings'), newSettings);
