@@ -8,7 +8,7 @@ let sysSettings = {
     cooldownHours: 24, maxKeysLimit: 5, maintenanceMode: false, 
     userParam: 'secure=true', adminParam: 'admin=true', 
     defaultKeyDuration: 24, defaultKeyTier: 'normal', defaultKeyLifetime: false,
-    customKeyPaths: []
+    customKeyPaths: [], maxDevicesLimit: 1
 };
 let externalDbs = []; 
 let isSettingsLoaded = false;
@@ -56,6 +56,7 @@ activeUnsubscribers.push(
             sysSettings = { ...sysSettings, ...data };
             sysSettings.cooldownHours = parseInt(data.cooldownHours) || 24;
             sysSettings.maxKeysLimit = parseInt(data.maxKeysLimit) || 5;
+            sysSettings.maxDevicesLimit = parseInt(data.maxDevicesLimit) || 1;
             if (!data.defaultKeyDuration) sysSettings.defaultKeyDuration = 24;
             if (!data.defaultKeyTier) sysSettings.defaultKeyTier = 'normal';
             if (data.developerLink) {
@@ -200,6 +201,10 @@ async function createAndRegisterKey() {
         durationHours: duration,
         isUsed: false,
         boundDeviceId: "NONE",
+        boundDevices: {},
+        maxDevices: sysSettings.maxDevicesLimit || 1,
+        banned: false,
+        note: "",
         type: isVip ? "VIP" : "Normal"
     };
 
