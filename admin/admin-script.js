@@ -584,6 +584,7 @@ function renderUnifiedKeys() {
             <td>
                 <div style="display:flex;gap:5px;flex-wrap:wrap;">
                     <button class="action-icon icon-copy" data-key="${item.k}"><i class="fa-regular fa-copy"></i></button>
+                    <button class="action-icon icon-db" data-key="${item.k}" title="Firebase Status"><i class="fa-solid fa-cloud"></i></button>
                     <button class="action-icon icon-edit" data-key="${item.k}"><i class="fa-solid fa-pen"></i></button>
                     ${isBd ? `<button class="action-icon icon-reset" data-key="${item.k}"><i class="fa-solid fa-unlock"></i></button>` : ''}
                     <button class="action-icon icon-del" data-key="${item.k}"><i class="fa-solid fa-trash"></i></button>
@@ -687,11 +688,58 @@ if (savedSearch) {
 
 // ===== KEY ACTIONS =====
 function attachKeyActions() {
-    document.querySelectorAll('.icon-copy').forEach(btn => { btn.onclick = function() { navigator.clipboard.writeText(this.dataset.key); showToast("Token Copied!"); }; });
-    document.querySelectorAll('.icon-edit').forEach(btn => { btn.onclick = editHandler; });
-    document.querySelectorAll('.icon-del').forEach(btn => { btn.onclick = btn.dataset.device ? banHandler : deleteHandler; });
-    document.querySelectorAll('.icon-reset').forEach(btn => { btn.onclick = resetHandler; });
+    document.querySelectorAll('#tableBody .icon-copy').forEach(btn => { btn.onclick = function() { navigator.clipboard.writeText(this.dataset.key); showToast("Token Copied!"); }; });
+    document.querySelectorAll('#tableBody .icon-db').forEach(btn => { btn.onclick = function() { showKeyDbStatus(this.dataset.key); }; });
+    document.querySelectorAll('#tableBody .icon-edit').forEach(btn => { btn.onclick = editHandler; });
+    document.querySelectorAll('#tableBody .icon-del, #usersBody .icon-del').forEach(btn => { btn.onclick = btn.dataset.device ? banHandler : deleteHandler; });
+    document.querySelectorAll('#tableBody .icon-reset').forEach(btn => { btn.onclick = resetHandler; });
 }
+
+// ===== KEY FIREBASE STATUS (per-hub create check) =====
+window.showKeyDbStatus = async function(key) {
+    if (!key) return;
+    let overlay = document.getElementById('dbStatusOverlay');
+    if (overlay) overlay.remove();
+    overlay = document.createElement('div');
+    overlay.id = 'dbStatusOverlay';
+    const fbs = globalSecondaryFirebases;
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.78);z-index:10000;display:flex;align-items:center;justify-content:center;padding:15px;';
+    overlay.innerHTML = `<div style="background:#18181b;border:1px solid #3f3f46;border-radius:14px;padding:22px;width:min(500px,94vw);max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;">
+            <h3 style="margin:0;color:#e4e4e7;font-size:15px;"><i class="fa-solid fa-cloud" style="color:#60a5fa;"></i> Firebase Status — <span style="color:#facc15;font-family:'Space Mono',monospace;font-size:13px;">${key}</span></h3>
+            <button id="dbStatusClose" class="action-icon icon-del"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div id="dbStatusList" style="display:flex;flex-direction:column;gap:8px;">
+            ${fbs.length === 0 ? '<div style="color:#71717a;text-align:center;padding:15px;">No Firebase Hubs connected</div>' : fbs.map(fb => `
+                <div class="db-status-row" data-fbid="${fb.id}" style="display:flex;justify-content:space-between;align-items:center;background:#27272a;border-radius:8px;padding:10px 12px;gap:10px;">
+                    <div style="min-width:0;"><div style="color:#e4e4e7;font-size:13px;font-weight:600;">${fb.config.projectName || fb.id}</div><div style="color:#71717a;font-size:11px;word-break:break-all;">${fb.config.databaseURL || ''}</div></div>
+                    <div style="color:#facc15;font-size:12px;white-space:nowrap;"><i class="fa-solid fa-spinner fa-spin"></i> Checking...</div>
+                </div>`).join('')}
+        </div>
+        <div style="margin-top:12px;color:#71717a;font-size:11px;line-height:1.5;"><span style="color:#34d399;">● CREATED</span> = key bani hui hai &nbsp;|&nbsp; <span style="color:#ef4444;">● FAILED</span> = rules publish nahi hue ya config galat</div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+    document.getElementById('dbStatusClose').onclick = () => overlay.remove();
+
+    for (const fb of fbs) {
+        const row = overlay.querySelector(`.db-status-row[data-fbid="${fb.id}"]`);
+        if (!row) continue;
+        const statusEl = row.lastElementChild;
+        try {
+            const snap = await get(ref(fb.db, 'ActiveUserKeys/' + key));
+            if (snap.exists()) {
+                statusEl.innerHTML = '<span style="color:#34d399;font-weight:700;font-size:12px;"><i class="fa-solid fa-circle-check"></i> CREATED</span>';
+            } else {
+                statusEl.innerHTML = '<span style="color:#ef4444;font-weight:700;font-size:12px;" title="Key not found in this database"><i class="fa-solid fa-circle-xmark"></i> NOT CREATED</span>';
+            }
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : 'Unknown error';
+            const reason = /permission/i.test(msg) ? 'Permission denied — rules publish karein' : msg;
+            statusEl.innerHTML = `<div style="text-align:right;"><span style="color:#ef4444;font-weight:700;font-size:12px;cursor:help;" title="${msg.replace(/"/g, '&quot;')}"><i class="fa-solid fa-triangle-exclamation"></i> FAILED</span><div style="color:#ef4444;font-size:10px;margin-top:2px;">${reason}</div></div>`;
+        }
+    }
+};
 
 async function editHandler() {
     const key = this.dataset.key;
@@ -756,17 +804,16 @@ function loadData() {
         
         const adminParam = data.adminParam || 'admin=true';
         const userParam = data.userParam || 'secure=true';
+        const panelRootLink = data.panelRootLink || '';
         document.getElementById('settingAdminParam').value = adminParam;
         document.getElementById('settingUserParam').value = userParam;
+        document.getElementById('settingPanelLink').value = panelRootLink;
+        
+        updateLinkPreviews();
         
         const devLink = data.developerLink || '';
         document.getElementById('settingDevLink').value = devLink;
         document.getElementById('devLinkPreview').innerText = devLink || 'No link set';
-        
-        const adminBase = window.location.origin + window.location.pathname.replace(/admin\.html.*$/, '');
-        const userBase = adminBase.replace(/Admin-Key-Generators\/Admin-Key-Generators-main\/?$/, 'Key-Generators/Key-Generators-main/');
-        document.getElementById('adminLinkPreview').innerText = `${adminBase}index.html?${adminParam}`;
-        document.getElementById('userLinkPreview').innerText = `${userBase}?${userParam}`;
         
         if (data.defaultKeyDuration !== undefined) {
             const hours = data.defaultKeyDuration;
@@ -1138,19 +1185,46 @@ document.getElementById('saveRulesBtn')?.addEventListener('click', async functio
     } catch (e) { showToast(e.message, true); }
 });
 
+// ===== LINKS PREVIEW =====
+window.updateLinkPreviews = function() {
+    const adminParam = document.getElementById('settingAdminParam')?.value || 'admin=true';
+    const userParam = document.getElementById('settingUserParam')?.value || 'secure=true';
+    const panelRoot = document.getElementById('settingPanelLink')?.value || '';
+
+    const adminPreview = document.getElementById('adminLinkPreview');
+    const userPreview = document.getElementById('userLinkPreview');
+
+    if (panelRoot) {
+        let clean = panelRoot.replace(/\/+$/, '');
+        if (/index\.html$/i.test(clean)) clean = clean.replace(/\/?index\.html$/i, '');
+        adminPreview.innerText = `${clean}/index.html?${adminParam}`;
+        adminPreview.style.color = '#34d399';
+        userPreview.innerText = `${clean}/index.html?${userParam}`;
+        userPreview.style.color = '#34d399';
+    } else {
+        const adminBase = window.location.origin + window.location.pathname.replace(/admin\.html.*$/, '');
+        adminPreview.innerText = `${adminBase}index.html?${adminParam}`;
+        adminPreview.style.color = '#6366f1';
+        userPreview.innerText = 'Panel Root Link save karein — user link yahan sahi banega';
+        userPreview.style.color = '#facc15';
+    }
+};
+
 // ===== LINKS SAVE =====
 document.getElementById('saveLinksBtn')?.addEventListener('click', async function() {
     if (!db) return;
     try {
         const snap = await get(ref(db, 'SystemSettings'));
         const oldDB = snap.exists() ? snap.val() : {};
-        const oldLinks = { userParam: oldDB.userParam ?? 'secure=true', adminParam: oldDB.adminParam ?? 'admin=true' };
+        const oldLinks = { userParam: oldDB.userParam ?? 'secure=true', adminParam: oldDB.adminParam ?? 'admin=true', panelRootLink: oldDB.panelRootLink ?? '' };
         const newLinks = {
             userParam: document.getElementById('settingUserParam').value.trim() || 'secure=true',
-            adminParam: document.getElementById('settingAdminParam').value.trim() || 'admin=true'
+            adminParam: document.getElementById('settingAdminParam').value.trim() || 'admin=true',
+            panelRootLink: document.getElementById('settingPanelLink').value.trim()
         };
         await update(ref(db, 'SystemSettings'), newLinks);
         await logAdminActivity("Updated Secret Links", `User: ${newLinks.userParam} | Admin: ${newLinks.adminParam}`, { oldSettings: oldLinks }, "SETTINGS");
+        window.updateLinkPreviews();
         showToast("Links Updated Successfully!");
     } catch (e) { showToast(e.message, true); }
 });
@@ -1162,8 +1236,8 @@ document.getElementById('saveDevLinkBtn')?.addEventListener('click', async funct
         const devLink = document.getElementById('settingDevLink').value.trim();
         await update(ref(db, 'SystemSettings'), { developerLink: devLink });
         document.getElementById('devLinkPreview').innerText = devLink || 'No link set';
-        await logAdminActivity("Updated Developer Link", `Link: ${devLink}`, {}, "SETTINGS");
-        showToast("Developer Link Saved!");
+        await logAdminActivity("Updated Provider Link", `Link: ${devLink}`, {}, "SETTINGS");
+        showToast("Provider Link Saved!");
     } catch (e) { showToast(e.message, true); }
 });
 

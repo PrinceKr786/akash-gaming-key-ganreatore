@@ -315,6 +315,8 @@
                 <div class="dashboard-grid settings-grid">
                     <div class="glow-card">
                         <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-link"></i> Secret URLs</h3>
+                        <span class="input-label">Panel Root Link (Base URL) — Admin ya User</span>
+                        <input type="url" id="settingPanelLink" class="input-dark" placeholder="e.g. http://127.0.0.1:5501/Admin-Key-Generators/" oninput="window.updateLinkPreviews()">
                         <span class="input-label">User Link Parameter (Generator Page)</span>
                         <input type="text" id="settingUserParam" class="input-dark" placeholder="e.g. secure=true">
                         <span class="input-label">Admin Link Parameter (Optional By-pass / Auth Path)</span>
@@ -330,10 +332,10 @@
                         </div>
                     </div>
                     <div class="glow-card" style="height: fit-content;">
-                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-user-astronaut"></i> Developer Button Link</h3>
-                        <span class="input-label">Developer Button URL (User Panel)</span>
+                        <h3 style="font-size: 16px; margin-bottom: 15px;"><i class="fa-solid fa-user-astronaut"></i> Provider Button Link</h3>
+                        <span class="input-label">Provider Button URL (User Panel)</span>
                         <input type="text" id="settingDevLink" class="input-dark" placeholder="e.g. https://t.me/yourchannel">
-                        <button class="btn-outline" id="saveDevLinkBtn" style="margin-top: 10px;">Save Developer Link</button>
+                        <button class="btn-outline" id="saveDevLinkBtn" style="margin-top: 10px;">Save Provider Link</button>
                         <div class="link-preview-box" style="margin-top: 10px;">
                             <span class="link-label">Current Link:</span><br>
                             <span id="devLinkPreview" class="link-url" style="color:#22d3ee;">Loading...</span>
